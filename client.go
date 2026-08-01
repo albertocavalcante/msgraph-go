@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -99,10 +100,8 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		baseURL: base,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		baseURL:    base,
+		httpClient: defaultHTTPClient(),
 		token:      token,
 		userAgent:  defaultUserAgent,
 		maxRetries: defaultRetries,
@@ -114,6 +113,27 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 		}
 	}
 	return c, nil
+}
+
+func defaultHTTPClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout:       10 * time.Second,
+		KeepAlive:     30 * time.Second,
+		FallbackDelay: 250 * time.Millisecond,
+	}
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 20 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
 }
 
 // Request describes a Microsoft Graph request.

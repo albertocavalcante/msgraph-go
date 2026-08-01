@@ -20,7 +20,7 @@ func main() {
 	scopesFlag := flag.String("scopes", "User.Read,Mail.Read", "comma-separated delegated Graph scopes")
 	device := flag.Bool("device", false, "use device-code login when a login is required")
 	top := flag.Int("top", 5, "number of messages to read from /me/messages")
-	timeout := flag.Duration("timeout", 30*time.Second, "Graph request timeout")
+	timeout := flag.Duration("timeout", 60*time.Second, "per Graph request timeout")
 	flag.Parse()
 
 	if err := run(*scopesFlag, *device, *top, *timeout); err != nil {
@@ -58,28 +58,33 @@ func run(scopesFlag string, device bool, top int, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("new graph client: %w", err)
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	var me graphUser
-	if _, err := graph.Get(requestCtx, "/me", msgraph.Params{
-		Select: []string{"id", "displayName", "userPrincipalName", "mail"},
-	}, &me); err != nil {
-		return fmt.Errorf("get /me: %w", err)
+	{
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if _, err := graph.Get(requestCtx, "/me", msgraph.Params{
+			Select: []string{"id", "displayName", "userPrincipalName", "mail"},
+		}, &me); err != nil {
+			return fmt.Errorf("get /me: %w", err)
+		}
 	}
 
 	var messages msgraph.Page[graphMessage]
-	if _, err := graph.Do(requestCtx, msgraph.Request{
-		Method: httpMethodGet,
-		URL:    "/me/messages",
-		Params: msgraph.Params{
-			Select:  []string{"id", "subject", "from", "receivedDateTime"},
-			OrderBy: []string{"receivedDateTime desc"},
-			Top:     top,
-		},
-		Prefer: []string{msgraph.PreferIDTypeImmutableID},
-	}, &messages); err != nil {
-		return fmt.Errorf("get /me/messages: %w", err)
+	{
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if _, err := graph.Do(requestCtx, msgraph.Request{
+			Method: httpMethodGet,
+			URL:    "/me/messages",
+			Params: msgraph.Params{
+				Select:  []string{"id", "subject", "from", "receivedDateTime"},
+				OrderBy: []string{"receivedDateTime desc"},
+				Top:     top,
+			},
+			Prefer: []string{msgraph.PreferIDTypeImmutableID},
+		}, &messages); err != nil {
+			return fmt.Errorf("get /me/messages: %w", err)
+		}
 	}
 
 	fmt.Printf("auth_ok=true username=%q home_account_id=%q\n", identity.Username, identity.HomeAccountID)
