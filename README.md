@@ -28,3 +28,11 @@ _, err := client.Get(ctx, "/me/messages", msgraph.Params{
 ```sh
 just ci
 ```
+
+Manual live smoke test:
+
+```sh
+cd cmd/msgraph-live-smoke
+go run .
+go run . # second run should reuse the msauth-go token cache silently
+```

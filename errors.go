@@ -33,14 +33,28 @@ func (e *APIError) Error() string {
 
 // IsThrottled reports whether err is a Graph throttling response.
 func IsThrottled(err error) bool {
-	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
+	return IsStatus(err, http.StatusTooManyRequests)
 }
 
 // IsNotFound reports whether err is a Graph 404 response.
 func IsNotFound(err error) bool {
+	return IsStatus(err, http.StatusNotFound)
+}
+
+// IsUnauthorized reports whether err is a Graph 401 response.
+func IsUnauthorized(err error) bool {
+	return IsStatus(err, http.StatusUnauthorized)
+}
+
+// IsForbidden reports whether err is a Graph 403 response.
+func IsForbidden(err error) bool {
+	return IsStatus(err, http.StatusForbidden)
+}
+
+// IsStatus reports whether err is a Graph response with statusCode.
+func IsStatus(err error, statusCode int) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
 }
 
 type graphErrorEnvelope struct {

@@ -118,14 +118,16 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 
 // Request describes a Microsoft Graph request.
 type Request struct {
-	Method      string
-	URL         string
-	Params      Params
-	Query       url.Values
-	Header      http.Header
-	Body        any
-	RawBody     []byte
-	ContentType string
+	Method           string
+	URL              string
+	Params           Params
+	Query            url.Values
+	Header           http.Header
+	Prefer           []string
+	ConsistencyLevel string
+	Body             any
+	RawBody          []byte
+	ContentType      string
 }
 
 // Response contains metadata from a successful Graph response.
@@ -239,6 +241,12 @@ func (c *Client) newHTTPRequest(
 	httpReq.Header.Set("User-Agent", c.userAgent)
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
+	}
+	if len(req.Prefer) > 0 {
+		httpReq.Header.Add("Prefer", strings.Join(req.Prefer, ", "))
+	}
+	if req.ConsistencyLevel != "" {
+		httpReq.Header.Set("ConsistencyLevel", req.ConsistencyLevel)
 	}
 	for key, vals := range req.Header {
 		for _, val := range vals {

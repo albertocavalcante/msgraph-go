@@ -47,6 +47,34 @@ func TestClientGetAddsAuthAndQuery(t *testing.T) {
 	}
 }
 
+func TestClientRequestHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Values("Prefer"); len(got) != 1 || got[0] != `IdType="ImmutableId", outlook.body-content-type="text"` {
+			t.Fatalf("Prefer = %q", got)
+		}
+		if got := r.Header.Get("ConsistencyLevel"); got != ConsistencyLevelEventual {
+			t.Fatalf("ConsistencyLevel = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testMessage
+	_, err = client.Do(context.Background(), Request{
+		Method:           http.MethodGet,
+		URL:              "/me/messages/1",
+		Prefer:           []string{PreferIDTypeImmutableID, PreferBodyContentTypeText},
+		ConsistencyLevel: ConsistencyLevelEventual,
+	}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientPostJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
@@ -116,6 +144,9 @@ func TestClientAPIError(t *testing.T) {
 	if apiErr.StatusCode != http.StatusForbidden || apiErr.Code != "ErrorAccessDenied" || apiErr.RequestID != "req-1" {
 		t.Fatalf("apiErr = %+v", apiErr)
 	}
+	if !IsForbidden(err) || IsUnauthorized(err) || IsNotFound(err) {
+		t.Fatalf("status helpers returned unexpected values for %v", err)
+	}
 }
 
 func TestClientRetriesRetryAfter(t *testing.T) {
@@ -153,6 +184,43 @@ func TestClientRetriesRetryAfter(t *testing.T) {
 	}
 	if len(slept) != 1 || slept[0] != time.Second {
 		t.Fatalf("slept = %v, want [1s]", slept)
+	}
+}
+
+func TestClientRetriesHTTPDateRetryAfter(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", time.Now().Add(time.Second).UTC().Format(http.TimeFormat))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer server.Close()
+
+	var slept []time.Duration
+	client, err := New(
+		staticToken("test-token"),
+		WithBaseURL(server.URL),
+		WithSleeper(func(_ context.Context, delay time.Duration) error {
+			slept = append(slept, delay)
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testMessage
+	if _, err := client.Get(context.Background(), "/me", Params{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(slept) != 1 || slept[0] <= 0 {
+		t.Fatalf("slept = %v, want positive delay", slept)
 	}
 }
 
