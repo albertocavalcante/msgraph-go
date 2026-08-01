@@ -1,0 +1,187 @@
+package msgraph
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestClientGetAddsAuthAndQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.URL.Path; got != "/v1.0/me/messages" {
+			t.Fatalf("path = %q", got)
+		}
+		if got := r.URL.Query().Get("$select"); got != "id,subject" {
+			t.Fatalf("$select = %q", got)
+		}
+		if got := r.URL.Query().Get("$top"); got != "2" {
+			t.Fatalf("$top = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":[{"id":"1","subject":"hello"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL+"/v1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	if _, err := client.Get(context.Background(), "/me/messages", Params{
+		Select: []string{"id", "subject"},
+		Top:    2,
+	}, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Value) != 1 || page.Value[0].Subject != "hello" {
+		t.Fatalf("page = %+v", page)
+	}
+}
+
+func TestClientPostJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["subject"] != "hello" {
+			t.Fatalf("body = %+v", body)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Post(context.Background(), "/me/sendMail", Params{}, map[string]string{"subject": "hello"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("StatusCode = %d", resp.StatusCode)
+	}
+}
+
+func TestClientAbsoluteURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/next" {
+			t.Fatalf("path = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL("https://graph.microsoft.com/v1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	if _, err := client.Get(context.Background(), server.URL+"/next", Params{}, &page); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("request-id", "req-1")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"ErrorAccessDenied","message":"denied"}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_, err = client.Get(context.Background(), "/me", Params{}, &out)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusForbidden || apiErr.Code != "ErrorAccessDenied" || apiErr.RequestID != "req-1" {
+		t.Fatalf("apiErr = %+v", apiErr)
+	}
+}
+
+func TestClientRetriesRetryAfter(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"TooManyRequests","message":"slow down"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer server.Close()
+
+	var slept []time.Duration
+	client, err := New(
+		staticToken("test-token"),
+		WithBaseURL(server.URL),
+		WithSleeper(func(_ context.Context, delay time.Duration) error {
+			slept = append(slept, delay)
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testMessage
+	if _, err := client.Get(context.Background(), "/me", Params{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(slept) != 1 || slept[0] != time.Second {
+		t.Fatalf("slept = %v, want [1s]", slept)
+	}
+}
+
+func TestClientStreamsWriter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := client.Get(context.Background(), "/download", Params{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != "payload" {
+		t.Fatalf("out = %q", out.String())
+	}
+}
+
+type testMessage struct {
+	ID      string `json:"id"`
+	Subject string `json:"subject"`
+}
+
+func staticToken(value string) TokenSource {
+	return TokenSourceFunc(func(context.Context) (string, error) {
+		return value, nil
+	})
+}
