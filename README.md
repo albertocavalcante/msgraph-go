@@ -36,6 +36,10 @@ _, err := client.Get(ctx, "/me/messages", msgraph.Params{
   subrequest fails.
 - `Pages`/`Items` detect repeated `nextLink` values, and `WithMaxPages` can cap
   traversal.
+- `SuggestDelegatedScopes` provides conservative delegated-scope hints for
+  common raw Graph routes.
+- `TranslateExchangeIDs` wraps `/me/translateExchangeIds` and
+  `/users/{id}/translateExchangeIds` for Exchange/REST/immutable ID conversion.
 
 ## Develop
 

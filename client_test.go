@@ -124,6 +124,25 @@ func TestClientAbsoluteURL(t *testing.T) {
 	}
 }
 
+func TestClientPreservesEscapedRelativePathSegments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.EscapedPath(); got != "/v1.0/users/a%2Fb@example.com" {
+			t.Fatalf("escaped path = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL+"/v1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testMessage
+	if _, err := client.Get(context.Background(), "/users/a%2Fb@example.com", Params{}, &out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("request-id", "req-1")

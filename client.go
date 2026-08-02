@@ -325,7 +325,14 @@ func (c *Client) resolveURL(value string) (*url.URL, error) {
 		return parsed, nil
 	}
 	base := *c.baseURL
-	base.Path = strings.TrimRight(base.Path, "/") + "/" + strings.TrimLeft(parsed.Path, "/")
+	basePath := strings.TrimRight(base.Path, "/")
+	baseEscapedPath := strings.TrimRight(base.EscapedPath(), "/")
+	requestPath := strings.TrimLeft(parsed.Path, "/")
+	requestEscapedPath := strings.TrimLeft(parsed.EscapedPath(), "/")
+	base.Path = basePath + "/" + requestPath
+	if requestEscapedPath != requestPath || baseEscapedPath != basePath {
+		base.RawPath = baseEscapedPath + "/" + requestEscapedPath
+	}
 	base.RawQuery = parsed.RawQuery
 	return &base, nil
 }
