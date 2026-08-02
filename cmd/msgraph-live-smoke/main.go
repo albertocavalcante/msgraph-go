@@ -20,16 +20,17 @@ func main() {
 	scopesFlag := flag.String("scopes", "User.Read,Mail.Read", "comma-separated delegated Graph scopes")
 	device := flag.Bool("device", false, "use device-code login when a login is required")
 	top := flag.Int("top", 5, "number of messages to read from /me/messages")
+	showMessages := flag.Bool("show-messages", false, "print message sender and subject metadata")
 	timeout := flag.Duration("timeout", 60*time.Second, "per Graph request timeout")
 	flag.Parse()
 
-	if err := run(*scopesFlag, *device, *top, *timeout); err != nil {
+	if err := run(*scopesFlag, *device, *top, *showMessages, *timeout); err != nil {
 		fmt.Fprintf(os.Stderr, "msgraph live smoke failed: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(scopesFlag string, device bool, top int, timeout time.Duration) error {
+func run(scopesFlag string, device bool, top int, showMessages bool, timeout time.Duration) error {
 	scopes := splitScopes(scopesFlag)
 	if len(scopes) == 0 {
 		return errors.New("at least one scope is required")
@@ -77,7 +78,7 @@ func run(scopesFlag string, device bool, top int, timeout time.Duration) error {
 			Method: httpMethodGet,
 			URL:    "/me/messages",
 			Params: msgraph.Params{
-				Select:  []string{"id", "subject", "from", "receivedDateTime"},
+				Select:  messageSelectFields(showMessages),
 				OrderBy: []string{"receivedDateTime desc"},
 				Top:     top,
 			},
@@ -90,16 +91,18 @@ func run(scopesFlag string, device bool, top int, timeout time.Duration) error {
 	fmt.Printf("auth_ok=true username=%q home_account_id=%q\n", identity.Username, identity.HomeAccountID)
 	fmt.Printf("graph_me_ok=true id=%q display_name=%q mail=%q upn=%q\n", me.ID, me.DisplayName, me.Mail, me.UserPrincipalName)
 	fmt.Printf("messages_ok=true count=%d\n", len(messages.Value))
-	for _, message := range messages.Value {
-		from := message.From.EmailAddress.Address
-		if from == "" {
-			from = "(no sender)"
+	if showMessages {
+		for _, message := range messages.Value {
+			from := message.From.EmailAddress.Address
+			if from == "" {
+				from = "(no sender)"
+			}
+			fmt.Printf("  %s  %-32s  %s\n",
+				message.Received.Local().Format("2006-01-02 15:04"),
+				truncate(from, 32),
+				truncate(message.Subject, 72),
+			)
 		}
-		fmt.Printf("  %s  %-32s  %s\n",
-			message.Received.Local().Format("2006-01-02 15:04"),
-			truncate(from, 32),
-			truncate(message.Subject, 72),
-		)
 	}
 	return nil
 }
@@ -136,12 +139,20 @@ func splitScopes(value string) []string {
 	return scopes
 }
 
+func messageSelectFields(showMessages bool) []string {
+	if showMessages {
+		return []string{"id", "subject", "from", "receivedDateTime"}
+	}
+	return []string{"id", "receivedDateTime"}
+}
+
 func truncate(value string, maxLen int) string {
-	if len(value) <= maxLen {
+	runes := []rune(value)
+	if len(runes) <= maxLen {
 		return value
 	}
 	if maxLen <= 3 {
-		return value[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return value[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }

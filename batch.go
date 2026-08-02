@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 const maxBatchRequests = 20
@@ -35,6 +36,18 @@ type BatchResponse struct {
 	Body    json.RawMessage   `json:"body,omitempty"`
 }
 
+// BatchError reports one or more failed subresponses from a strict batch call.
+type BatchError struct {
+	Responses []BatchResponse
+}
+
+func (e *BatchError) Error() string {
+	if len(e.Responses) == 1 {
+		return fmt.Sprintf("msgraph: batch subrequest %q failed with status %d", e.Responses[0].ID, e.Responses[0].Status)
+	}
+	return fmt.Sprintf("msgraph: %d batch subrequests failed", len(e.Responses))
+}
+
 type batchEnvelope struct {
 	Requests []BatchRequest `json:"requests"`
 }
@@ -62,7 +75,7 @@ func (c *Client) Batch(ctx context.Context, requests []BatchRequest) ([]BatchRes
 		if req.URL == "" {
 			return nil, fmt.Errorf("%w at index %d", errBatchMissingURL, i)
 		}
-		batchURL, err := normalizeBatchURL(req.URL)
+		batchURL, err := c.normalizeBatchURL(req.URL)
 		if err != nil {
 			return nil, fmt.Errorf("batch request %q url: %w", req.ID, err)
 		}
@@ -77,7 +90,33 @@ func (c *Client) Batch(ctx context.Context, requests []BatchRequest) ([]BatchRes
 	return result.Responses, nil
 }
 
-func normalizeBatchURL(value string) (string, error) {
+// BatchStrict sends a JSON batch and returns a [BatchError] when any
+// subrequest status is outside 2xx. The full response slice is still returned
+// so callers can inspect successes and failures together.
+func (c *Client) BatchStrict(ctx context.Context, requests []BatchRequest) ([]BatchResponse, error) {
+	responses, err := c.Batch(ctx, requests)
+	if err != nil {
+		return nil, err
+	}
+	failed := FailedBatchResponses(responses)
+	if len(failed) > 0 {
+		return responses, &BatchError{Responses: failed}
+	}
+	return responses, nil
+}
+
+// FailedBatchResponses returns every subresponse with a non-2xx status.
+func FailedBatchResponses(responses []BatchResponse) []BatchResponse {
+	var failed []BatchResponse
+	for _, resp := range responses {
+		if resp.Status < 200 || resp.Status > 299 {
+			failed = append(failed, resp)
+		}
+	}
+	return failed
+}
+
+func (c *Client) normalizeBatchURL(value string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return "", err
@@ -85,7 +124,10 @@ func normalizeBatchURL(value string) (string, error) {
 	if !parsed.IsAbs() {
 		return value, nil
 	}
-	relative := parsed.EscapedPath()
+	if !sameOrigin(parsed, c.baseURL) {
+		return "", fmt.Errorf("absolute URL origin %q does not match Graph base origin %q", parsed.Scheme+"://"+parsed.Host, c.baseURL.Scheme+"://"+c.baseURL.Host)
+	}
+	relative := stripBasePath(parsed.EscapedPath(), c.baseURL.EscapedPath())
 	if parsed.RawQuery != "" {
 		relative += "?" + parsed.RawQuery
 	}
@@ -93,4 +135,22 @@ func normalizeBatchURL(value string) (string, error) {
 		return "", errBatchMissingURL
 	}
 	return relative, nil
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func stripBasePath(pathValue, basePath string) string {
+	basePath = strings.TrimRight(basePath, "/")
+	if basePath == "" {
+		return pathValue
+	}
+	if pathValue == basePath {
+		return "/"
+	}
+	if strings.HasPrefix(pathValue, basePath+"/") {
+		return strings.TrimPrefix(pathValue, basePath)
+	}
+	return pathValue
 }

@@ -15,21 +15,25 @@ import (
 )
 
 const (
-	defaultBaseURL   = "https://graph.microsoft.com/v1.0"
-	defaultUserAgent = "msgraph-go"
-	defaultRetries   = 3
+	defaultBaseURL       = "https://graph.microsoft.com/v1.0"
+	defaultUserAgent     = "msgraph-go"
+	defaultRetries       = 3
+	defaultMaxRetryDelay = 30 * time.Second
+	maxErrorBodyBytes    = 1 << 20
 )
 
 var errNilTokenSource = errors.New("msgraph: nil token source")
 
 // Client is a small Microsoft Graph REST client.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	token      TokenSource
-	userAgent  string
-	maxRetries int
-	sleep      sleepFunc
+	baseURL            *url.URL
+	httpClient         *http.Client
+	token              TokenSource
+	userAgent          string
+	maxRetries         int
+	maxDelay           time.Duration
+	retryUnsafeMethods bool
+	sleep              sleepFunc
 }
 
 // Option configures a Client.
@@ -80,6 +84,25 @@ func WithMaxRetries(value int) Option {
 	}
 }
 
+// WithMaxRetryDelay caps retry sleeps, including Retry-After values. A
+// non-positive value disables the cap.
+func WithMaxRetryDelay(value time.Duration) Option {
+	return func(c *Client) error {
+		c.maxDelay = value
+		return nil
+	}
+}
+
+// WithRetryUnsafeMethods allows retries for non-idempotent HTTP methods. It is
+// disabled by default because Graph mutations can have side effects before a
+// transient response or connection failure is observed by the client.
+func WithRetryUnsafeMethods(value bool) Option {
+	return func(c *Client) error {
+		c.retryUnsafeMethods = value
+		return nil
+	}
+}
+
 // WithSleeper overrides retry sleeping. It exists for tests.
 func WithSleeper(fn sleepFunc) Option {
 	return func(c *Client) error {
@@ -105,6 +128,7 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 		token:      token,
 		userAgent:  defaultUserAgent,
 		maxRetries: defaultRetries,
+		maxDelay:   defaultMaxRetryDelay,
 		sleep:      sleepContext,
 	}
 	for _, opt := range opts {
@@ -190,6 +214,7 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 	}
 
 	var lastErr error
+	canRetry := c.canRetryMethod(method)
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		httpReq, err := c.newHTTPRequest(ctx, method, req, body, contentType)
 		if err != nil {
@@ -198,17 +223,17 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			lastErr = err
-			if attempt == c.maxRetries {
+			if attempt == c.maxRetries || !canRetry {
 				return nil, err
 			}
-			if err := c.sleep(ctx, retryDelay(nil, attempt)); err != nil {
+			if err := c.sleep(ctx, retryDelay(nil, attempt, c.maxDelay)); err != nil {
 				return nil, err
 			}
 			continue
 		}
 
-		if retryableStatus(resp.StatusCode) && attempt < c.maxRetries {
-			delay := retryDelay(resp.Header, attempt)
+		if retryableStatus(resp.StatusCode) && attempt < c.maxRetries && canRetry {
+			delay := retryDelay(resp.Header, attempt, c.maxDelay)
 			_ = resp.Body.Close()
 			if err := c.sleep(ctx, delay); err != nil {
 				return nil, err
@@ -218,6 +243,18 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 		return decodeResponse(resp, out)
 	}
 	return nil, lastErr
+}
+
+func (c *Client) canRetryMethod(method string) bool {
+	if c.retryUnsafeMethods {
+		return true
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) newHTTPRequest(
@@ -313,11 +350,11 @@ func encodeBody(req Request) (body []byte, contentType string, err error) {
 
 func decodeResponse(resp *http.Response, out any) (*Response, error) {
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("read error response: %w", err)
+		}
 		return nil, parseAPIError(resp.StatusCode, resp.Header, body)
 	}
 	meta := &Response{
@@ -325,12 +362,21 @@ func decodeResponse(resp *http.Response, out any) (*Response, error) {
 		Header:     resp.Header.Clone(),
 		RequestID:  firstHeader(resp.Header, "request-id", "client-request-id"),
 	}
-	if out == nil || len(body) == 0 {
+	if out == nil {
 		return meta, nil
 	}
 	if writer, ok := out.(io.Writer); ok {
-		_, err := writer.Write(body)
-		return meta, err
+		if _, err := io.Copy(writer, resp.Body); err != nil {
+			return meta, fmt.Errorf("stream response: %w", err)
+		}
+		return meta, nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(body) == 0 {
+		return meta, nil
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)

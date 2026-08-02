@@ -23,6 +23,20 @@ _, err := client.Get(ctx, "/me/messages", msgraph.Params{
 }, &page)
 ```
 
+### Transport behavior
+
+- Retries are enabled for safe methods (`GET`, `HEAD`, `OPTIONS`) on throttling
+  and transient server errors. Mutating methods are not retried unless
+  `WithRetryUnsafeMethods(true)` is set explicitly.
+- Retry sleeps honor `Retry-After` and are capped by `WithMaxRetryDelay`
+  (`30s` by default).
+- Passing an `io.Writer` as `out` streams successful response bodies instead of
+  buffering them first.
+- `BatchStrict` returns all batch responses plus a `BatchError` when any
+  subrequest fails.
+- `Pages`/`Items` detect repeated `nextLink` values, and `WithMaxPages` can cap
+  traversal.
+
 ## Develop
 
 ```sh
@@ -34,5 +48,6 @@ Manual live smoke test:
 ```sh
 cd cmd/msgraph-live-smoke
 go run .
+go run . -show-messages # opt in to printing sender/subject metadata
 go run . # second run should reuse the msauth-go token cache silently
 ```

@@ -7,7 +7,8 @@ import (
 	"net/http"
 )
 
-var errGraphRequestFailed = errors.New("msgraph: request failed")
+// ErrRequestFailed is wrapped by [APIError] for non-2xx Graph responses.
+var ErrRequestFailed = errors.New("msgraph: request failed")
 
 // APIError is a structured Microsoft Graph error response.
 type APIError struct {
@@ -20,15 +21,19 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Code == "" && e.Message == "" {
-		return fmt.Sprintf("%v: status %d", errGraphRequestFailed, e.StatusCode)
+		return fmt.Sprintf("%v: status %d", ErrRequestFailed, e.StatusCode)
 	}
 	if e.Code == "" {
-		return fmt.Sprintf("%v: status %d: %s", errGraphRequestFailed, e.StatusCode, e.Message)
+		return fmt.Sprintf("%v: status %d: %s", ErrRequestFailed, e.StatusCode, e.Message)
 	}
 	if e.Message == "" {
-		return fmt.Sprintf("%v: status %d: %s", errGraphRequestFailed, e.StatusCode, e.Code)
+		return fmt.Sprintf("%v: status %d: %s", ErrRequestFailed, e.StatusCode, e.Code)
 	}
-	return fmt.Sprintf("%v: status %d: %s: %s", errGraphRequestFailed, e.StatusCode, e.Code, e.Message)
+	return fmt.Sprintf("%v: status %d: %s: %s", ErrRequestFailed, e.StatusCode, e.Code, e.Message)
+}
+
+func (e *APIError) Unwrap() error {
+	return ErrRequestFailed
 }
 
 // IsThrottled reports whether err is a Graph throttling response.
@@ -67,6 +72,13 @@ type graphErrorBody struct {
 	InnerError json.RawMessage `json:"innerError"`
 }
 
+type innerGraphError struct {
+	RequestID       string          `json:"request-id"`
+	RequestIDCamel  string          `json:"requestId"`
+	ClientRequestID string          `json:"client-request-id"`
+	InnerError      json.RawMessage `json:"innerError"`
+}
+
 func parseAPIError(statusCode int, header http.Header, body []byte) *APIError {
 	apiErr := &APIError{
 		StatusCode: statusCode,
@@ -88,16 +100,22 @@ func requestIDFromInner(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var fields map[string]any
+	var fields innerGraphError
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return ""
 	}
-	for _, key := range []string{"request-id", "requestId", "client-request-id"} {
-		if val, ok := fields[key].(string); ok {
-			return val
-		}
+	switch {
+	case fields.RequestID != "":
+		return fields.RequestID
+	case fields.RequestIDCamel != "":
+		return fields.RequestIDCamel
+	case fields.ClientRequestID != "":
+		return fields.ClientRequestID
+	case len(fields.InnerError) > 0:
+		return requestIDFromInner(fields.InnerError)
+	default:
+		return ""
 	}
-	return ""
 }
 
 func firstHeader(header http.Header, names ...string) string {

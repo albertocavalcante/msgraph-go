@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,11 +142,36 @@ func TestClientAPIError(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %v, want APIError", err)
 	}
+	if !errors.Is(err, ErrRequestFailed) {
+		t.Fatalf("err = %v, want ErrRequestFailed", err)
+	}
 	if apiErr.StatusCode != http.StatusForbidden || apiErr.Code != "ErrorAccessDenied" || apiErr.RequestID != "req-1" {
 		t.Fatalf("apiErr = %+v", apiErr)
 	}
 	if !IsForbidden(err) || IsUnauthorized(err) || IsNotFound(err) {
 		t.Fatalf("status helpers returned unexpected values for %v", err)
+	}
+}
+
+func TestClientAPIErrorUsesNestedInnerRequestID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"BadRequest","message":"bad","innerError":{"date":"now","innerError":{"request-id":"nested-req"}}}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_, err = client.Get(context.Background(), "/me", Params{}, &out)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want APIError", err)
+	}
+	if apiErr.RequestID != "nested-req" {
+		t.Fatalf("RequestID = %q, want nested-req", apiErr.RequestID)
 	}
 }
 
@@ -187,6 +213,64 @@ func TestClientRetriesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotRetryUnsafeMethodByDefault(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"code":"ServiceUnavailable","message":"try later"}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(
+		staticToken("test-token"),
+		WithBaseURL(server.URL),
+		WithSleeper(func(context.Context, time.Duration) error {
+			t.Fatal("unsafe POST should not sleep for a retry")
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Post(context.Background(), "/me/sendMail", Params{}, map[string]string{"subject": "hello"}, nil)
+	if !IsStatus(err, http.StatusServiceUnavailable) {
+		t.Fatalf("err = %v, want 503 APIError", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestClientRetriesUnsafeMethodWhenOptedIn(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client, err := New(
+		staticToken("test-token"),
+		WithBaseURL(server.URL),
+		WithRetryUnsafeMethods(true),
+		WithSleeper(func(context.Context, time.Duration) error { return nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Post(context.Background(), "/me/sendMail", Params{}, map[string]string{"subject": "hello"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestClientRetriesHTTPDateRetryAfter(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -224,6 +308,13 @@ func TestClientRetriesHTTPDateRetryAfter(t *testing.T) {
 	}
 }
 
+func TestClientCapsRetryDelay(t *testing.T) {
+	header := http.Header{"Retry-After": []string{"3600"}}
+	if got := retryDelay(header, 0, 10*time.Second); got != 10*time.Second {
+		t.Fatalf("retryDelay = %v, want 10s", got)
+	}
+}
+
 func TestClientStreamsWriter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("payload"))
@@ -243,6 +334,23 @@ func TestClientStreamsWriter(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseStreamsWriterBeforeReadError(t *testing.T) {
+	body := &readErrorAfterFirstChunk{chunk: []byte("partial")}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       body,
+	}
+	var out bytes.Buffer
+	_, err := decodeResponse(resp, &out)
+	if err == nil {
+		t.Fatal("expected read error")
+	}
+	if out.String() != "partial" {
+		t.Fatalf("writer saw %q, want streamed partial chunk", out.String())
+	}
+}
+
 type testMessage struct {
 	ID      string `json:"id"`
 	Subject string `json:"subject"`
@@ -253,3 +361,18 @@ func staticToken(value string) TokenSource {
 		return value, nil
 	})
 }
+
+type readErrorAfterFirstChunk struct {
+	chunk []byte
+	read  bool
+}
+
+func (r *readErrorAfterFirstChunk) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, io.ErrUnexpectedEOF
+	}
+	r.read = true
+	return copy(p, r.chunk), nil
+}
+
+func (r *readErrorAfterFirstChunk) Close() error { return nil }

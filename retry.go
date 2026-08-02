@@ -29,7 +29,15 @@ func retryableStatus(statusCode int) bool {
 		statusCode == http.StatusGatewayTimeout
 }
 
-func retryDelay(header http.Header, attempt int) time.Duration {
+func retryDelay(header http.Header, attempt int, maxDelay time.Duration) time.Duration {
+	delay := uncappedRetryDelay(header, attempt)
+	if maxDelay > 0 && delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func uncappedRetryDelay(header http.Header, attempt int) time.Duration {
 	if value := header.Get("Retry-After"); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
 			return time.Duration(seconds) * time.Second
