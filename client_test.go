@@ -53,7 +53,7 @@ func TestClientRequestHeaders(t *testing.T) {
 		if got := r.Header.Values("Prefer"); len(got) != 1 || got[0] != `IdType="ImmutableId", outlook.body-content-type="text"` {
 			t.Fatalf("Prefer = %q", got)
 		}
-		if got := r.Header.Get("ConsistencyLevel"); got != ConsistencyLevelEventual {
+		if got := r.Header.Get("ConsistencyLevel"); got != string(ConsistencyLevelEventual) {
 			t.Fatalf("ConsistencyLevel = %q", got)
 		}
 		_, _ = w.Write([]byte(`{"id":"ok"}`))
@@ -68,7 +68,7 @@ func TestClientRequestHeaders(t *testing.T) {
 	_, err = client.Do(context.Background(), Request{
 		Method:           http.MethodGet,
 		URL:              "/me/messages/1",
-		Prefer:           []string{PreferIDTypeImmutableID, PreferBodyContentTypeText},
+		Prefer:           []PreferDirective{PreferIDTypeImmutableID, PreferBodyContentTypeText},
 		ConsistencyLevel: ConsistencyLevelEventual,
 	}, &out)
 	if err != nil {
@@ -114,13 +114,80 @@ func TestClientAbsoluteURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(staticToken("test-token"), WithBaseURL("https://graph.microsoft.com/v1.0"))
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var page Page[testMessage]
 	if _, err := client.Get(context.Background(), server.URL+"/next", Params{}, &page); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientRejectsOffOriginAbsoluteURL(t *testing.T) {
+	var reached bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer attacker.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL("https://graph.microsoft.com/v1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	_, err = client.Get(context.Background(), attacker.URL+"/next", Params{}, &page)
+	if !errors.Is(err, ErrUntrustedHost) {
+		t.Fatalf("err = %v, want ErrUntrustedHost", err)
+	}
+	if reached {
+		t.Fatal("request reached the off-origin host, leaking the bearer token")
+	}
+}
+
+func TestClientRejectsSchemeDowngrade(t *testing.T) {
+	client, err := New(staticToken("test-token"), WithBaseURL("https://graph.microsoft.com/v1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	_, err = client.Get(context.Background(), "http://graph.microsoft.com/v1.0/me/messages", Params{}, &page)
+	if !errors.Is(err, ErrUntrustedHost) {
+		t.Fatalf("err = %v, want ErrUntrustedHost", err)
+	}
+}
+
+func TestClientAllowsExplicitlyAllowedHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer server.Close()
+
+	// Same scheme as the base URL, different host: allowed only after opt-in.
+	client, err := New(
+		staticToken("test-token"),
+		WithBaseURL("http://graph.example.test/v1.0"),
+		WithAllowedHosts(server.URL),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	if _, err := client.Get(context.Background(), server.URL+"/next", Params{}, &page); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientRejectsNegativeParams(t *testing.T) {
+	client, err := New(staticToken("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	_, err = client.Get(context.Background(), "/me/messages", Params{Top: -1}, &page)
+	if !errors.Is(err, ErrInvalidParams) {
+		t.Fatalf("err = %v, want ErrInvalidParams", err)
 	}
 }
 

@@ -81,3 +81,30 @@ func Items[T any](ctx context.Context, client *Client, path string, params Param
 		}
 	}
 }
+
+// Delta drains a Microsoft Graph delta query and returns the changed items
+// together with the deltaLink from the final page.
+//
+// Pass a resource path such as "/me/mailFolders/inbox/messages/delta" for the
+// initial full sync, then pass the returned deltaLink back on later calls to
+// receive only what changed. Unlike [Items], delta results have to be drained
+// eagerly: the deltaLink only arrives on the last page, and skipping it would
+// lose the sync position.
+func Delta[T any](
+	ctx context.Context,
+	client *Client,
+	path string,
+	params Params,
+	opts ...PageOption,
+) (items []T, deltaLink string, err error) {
+	for page, pageErr := range Pages[T](ctx, client, path, params, opts...) {
+		if pageErr != nil {
+			return items, deltaLink, pageErr
+		}
+		items = append(items, page.Value...)
+		if page.DeltaLink != "" {
+			deltaLink = page.DeltaLink
+		}
+	}
+	return items, deltaLink, nil
+}

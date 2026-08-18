@@ -37,17 +37,27 @@ func retryDelay(header http.Header, attempt int, maxDelay time.Duration) time.Du
 	return delay
 }
 
+// retryAfterDelay parses a Retry-After header in either of its two RFC 9110
+// spellings: delay-seconds, or an HTTP-date.
+func retryAfterDelay(header http.Header) (time.Duration, bool) {
+	value := header.Get("Retry-After")
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second, true
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay, true
+		}
+	}
+	return 0, false
+}
+
 func uncappedRetryDelay(header http.Header, attempt int) time.Duration {
-	if value := header.Get("Retry-After"); value != "" {
-		if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-			return time.Duration(seconds) * time.Second
-		}
-		if when, err := http.ParseTime(value); err == nil {
-			delay := time.Until(when)
-			if delay > 0 {
-				return delay
-			}
-		}
+	if delay, ok := retryAfterDelay(header); ok {
+		return delay
 	}
 	base := 100 * time.Millisecond
 	pow := math.Pow(2, float64(attempt))

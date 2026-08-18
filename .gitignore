@@ -1,4 +1,5 @@
 bin/
+cmd/msgraph-live-smoke/msgraph-live-smoke
 coverage.out
 coverage.html
 .DS_Store

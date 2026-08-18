@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -53,9 +54,9 @@ func run(scopesFlag string, device bool, top int, showMessages bool, timeout tim
 		return fmt.Errorf("identity/login: %w", err)
 	}
 
-	graph, err := msgraph.New(msgraph.TokenSourceFunc(func(ctx context.Context) (string, error) {
-		return auth.Token(ctx)
-	}))
+	// msauth-go's TokenSource satisfies msgraph.TokenSource structurally, so
+	// neither module has to import the other.
+	graph, err := msgraph.New(auth.TokenSource(scopes...))
 	if err != nil {
 		return fmt.Errorf("new graph client: %w", err)
 	}
@@ -63,9 +64,10 @@ func run(scopesFlag string, device bool, top int, showMessages bool, timeout tim
 	{
 		requestCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if _, err := graph.Get(requestCtx, "/me", msgraph.Params{
+		me, _, err = msgraph.Get[graphUser](requestCtx, graph, "/me", msgraph.Params{
 			Select: []string{"id", "displayName", "userPrincipalName", "mail"},
-		}, &me); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("get /me: %w", err)
 		}
 	}
@@ -74,16 +76,17 @@ func run(scopesFlag string, device bool, top int, showMessages bool, timeout tim
 	{
 		requestCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if _, err := graph.Do(requestCtx, msgraph.Request{
-			Method: httpMethodGet,
+		messages, _, err = msgraph.Do[msgraph.Page[graphMessage]](requestCtx, graph, msgraph.Request{
+			Method: http.MethodGet,
 			URL:    "/me/messages",
 			Params: msgraph.Params{
-				Select:  messageSelectFields(showMessages),
-				OrderBy: []string{"receivedDateTime desc"},
-				Top:     top,
+				Select: messageSelectFields(showMessages),
+				Sort:   []msgraph.Order{msgraph.Desc("receivedDateTime")},
+				Top:    top,
 			},
-			Prefer: []string{msgraph.PreferIDTypeImmutableID},
-		}, &messages); err != nil {
+			Prefer: []msgraph.PreferDirective{msgraph.PreferIDTypeImmutableID},
+		})
+		if err != nil {
 			return fmt.Errorf("get /me/messages: %w", err)
 		}
 	}
@@ -106,8 +109,6 @@ func run(scopesFlag string, device bool, top int, showMessages bool, timeout tim
 	}
 	return nil
 }
-
-const httpMethodGet = "GET"
 
 type graphUser struct {
 	ID                string `json:"id"`
