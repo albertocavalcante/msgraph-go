@@ -3,8 +3,8 @@ module github.com/albertocavalcante/msgraph-go/cmd/msgraph-live-smoke
 go 1.26
 
 require (
-	github.com/albertocavalcante/msauth-go v0.0.0
-	github.com/albertocavalcante/msgraph-go v0.0.0
+	github.com/albertocavalcante/msauth-go v0.2.0
+	github.com/albertocavalcante/msgraph-go v0.3.0
 )
 
 require (
