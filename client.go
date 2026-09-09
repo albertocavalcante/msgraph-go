@@ -317,18 +317,26 @@ func (c *Client) newHTTPRequest(
 	if err != nil {
 		return nil, err
 	}
-	query := u.Query()
-	for key, vals := range req.Params.Values() {
-		for _, val := range vals {
-			query.Add(key, val)
+	// Only rebuild the query when there is something to merge. Decoding and
+	// re-encoding rewrites the caller's query string — `$skiptoken` becomes
+	// `%24skiptoken`, and characters like ] ( * ! get percent-encoded — which
+	// matters for @odata.nextLink and @odata.deltaLink. Those are opaque
+	// continuation tokens the service handed us to echo back verbatim, and
+	// nothing good comes of re-spelling them.
+	if params := req.Params.Values(); len(params) > 0 || len(req.Query) > 0 {
+		query := u.Query()
+		for key, vals := range params {
+			for _, val := range vals {
+				query.Add(key, val)
+			}
 		}
-	}
-	for key, vals := range req.Query {
-		for _, val := range vals {
-			query.Add(key, val)
+		for key, vals := range req.Query {
+			for _, val := range vals {
+				query.Add(key, val)
+			}
 		}
+		u.RawQuery = query.Encode()
 	}
-	u.RawQuery = query.Encode()
 
 	var reader io.Reader
 	if body != nil {

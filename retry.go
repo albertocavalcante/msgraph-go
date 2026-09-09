@@ -2,7 +2,6 @@ package msgraph
 
 import (
 	"context"
-	"math"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -34,6 +33,11 @@ func retryDelay(header http.Header, attempt int, maxDelay time.Duration) time.Du
 	if maxDelay > 0 && delay > maxDelay {
 		return maxDelay
 	}
+	if delay <= 0 {
+		// Belt and braces: a zero or negative sleep would busy-loop the
+		// retry path against the service.
+		return backoffBase
+	}
 	return delay
 }
 
@@ -55,12 +59,28 @@ func retryAfterDelay(header http.Header) (time.Duration, bool) {
 	return 0, false
 }
 
+const (
+	backoffBase   = 100 * time.Millisecond
+	backoffJitter = 50 * time.Millisecond
+	// maxBackoffShift saturates the exponential term. backoffBase << 20 is
+	// about 29 hours, far past any sane WithMaxRetryDelay, and shifting no
+	// further keeps the arithmetic inside int64. The previous float
+	// exponential overflowed at attempt 37: the delay wrapped negative, and
+	// the maxDelay cap could not catch it because it only clamps values
+	// above the cap, so retries ran with no backoff at all.
+	maxBackoffShift = 20
+)
+
 func uncappedRetryDelay(header http.Header, attempt int) time.Duration {
 	if delay, ok := retryAfterDelay(header); ok {
 		return delay
 	}
-	base := 100 * time.Millisecond
-	pow := math.Pow(2, float64(attempt))
-	jitter := time.Duration(rand.Int64N(int64(50 * time.Millisecond)))
-	return time.Duration(pow)*base + jitter
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt > maxBackoffShift {
+		attempt = maxBackoffShift
+	}
+	jitter := time.Duration(rand.Int64N(int64(backoffJitter)))
+	return backoffBase<<uint(attempt) + jitter
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,56 @@ func TestClientAbsoluteURL(t *testing.T) {
 	var page Page[testMessage]
 	if _, err := client.Get(context.Background(), server.URL+"/next", Params{}, &page); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A nextLink or deltaLink is an opaque continuation token. It must go back to
+// the service exactly as received, not decoded and re-encoded into a different
+// spelling of the same thing.
+func TestClientSendsContinuationLinksVerbatim(t *testing.T) {
+	const rawQuery = `$skiptoken=AQ8A~PQ%3d%3d&$deltatoken=LzxYcC9]C(o*!~x&$top=10`
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	if _, err := client.Get(context.Background(), server.URL+"/next?"+rawQuery, Params{}, &page); err != nil {
+		t.Fatal(err)
+	}
+	if seen != rawQuery {
+		t.Fatalf("query was rewritten:\n got %s\nwant %s", seen, rawQuery)
+	}
+}
+
+// When the caller does supply params, merging them is still correct.
+func TestClientMergesParamsIntoExistingQuery(t *testing.T) {
+	var seen url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Query()
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(staticToken("test-token"), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page Page[testMessage]
+	if _, err := client.Get(context.Background(), "/me/messages?existing=1", Params{Top: 5}, &page); err != nil {
+		t.Fatal(err)
+	}
+	if got := seen.Get("existing"); got != "1" {
+		t.Fatalf("existing = %q, want 1", got)
+	}
+	if got := seen.Get("$top"); got != "5" {
+		t.Fatalf("$top = %q, want 5", got)
 	}
 }
 
