@@ -87,6 +87,32 @@ func TestExprEscapesEmbeddedQuotes(t *testing.T) {
 	}
 }
 
+// Floats must render at full precision. A fixed precision would quietly round
+// the value and change which records the filter matches.
+func TestLiteralFloatPrecision(t *testing.T) {
+	tests := []struct {
+		name string
+		expr Expr
+		want string
+	}{
+		{"fraction needing two digits", Eq("size", 1.25), "size eq 1.25"},
+		{"long fraction", Eq("size", 0.1234567), "size eq 0.1234567"},
+		{"whole number", Eq("size", 2.0), "size eq 2"},
+		{"float32", Eq("size", float32(1.25)), "size eq 1.25"},
+		{"negative", Eq("size", -3.5), "size eq -3.5"},
+		{"large int64", Eq("size", int64(9007199254740993)), "size eq 9007199254740993"},
+		{"uint64 max", Eq("size", uint64(18446744073709551615)), "size eq 18446744073709551615"},
+		{"negative int", Eq("size", -7), "size eq -7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.expr.ODataFilter(); got != tt.want {
+				t.Fatalf("ODataFilter() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExprTimeNormalizedToUTC(t *testing.T) {
 	zone := time.FixedZone("UTC-7", -7*60*60)
 	local := time.Date(2026, 8, 17, 5, 30, 0, 0, zone)
