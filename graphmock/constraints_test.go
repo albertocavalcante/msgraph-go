@@ -54,14 +54,3 @@ func TestFilterFields(t *testing.T) {
 		})
 	}
 }
-
-func TestItoa(t *testing.T) {
-	for _, tt := range []struct {
-		in   int
-		want string
-	}{{0, "0"}, {7, "7"}, {512, "512"}, {1000, "1000"}} {
-		if got := itoa(tt.in); got != tt.want {
-			t.Errorf("itoa(%d) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}

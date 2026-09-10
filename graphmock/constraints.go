@@ -2,6 +2,7 @@ package graphmock
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -110,7 +111,7 @@ func CapPageSize(maxSize int) Constraint {
 		if size, ok := r.PageSize(); ok && size > maxSize {
 			// Not a rejection: the service silently returns fewer items. The
 			// handler sees the capped value through EffectivePageSize.
-			r.Header.Set("Prefer", "odata.maxpagesize="+itoa(maxSize))
+			r.Header.Set("Prefer", "odata.maxpagesize="+strconv.Itoa(maxSize))
 		}
 		return nil
 	}
@@ -247,16 +248,4 @@ func isLiteralish(word string) bool {
 		}
 	}
 	return true
-}
-
-func itoa(value int) string {
-	digits := ""
-	if value == 0 {
-		return "0"
-	}
-	for value > 0 {
-		digits = string(rune('0'+value%10)) + digits
-		value /= 10
-	}
-	return digits
 }
