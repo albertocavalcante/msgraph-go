@@ -142,6 +142,19 @@ func SuggestDelegatedScopes(method, rawPath string) PermissionSuggestion {
 		}
 		suggestion.Notes = append(suggestion.Notes,
 			"Mail.ReadWrite does not cover mailbox settings; without MailboxSettings.* the service answers ErrorAccessDenied without naming the permission.")
+	case strings.Contains(path, "/inferenceclassification"):
+		// Focused Inbox overrides read as a mailbox setting and are not one.
+		// They sit under the mail permissions, so a caller holding
+		// MailboxSettings.ReadWrite and no mail scope is refused -- the exact
+		// opposite of the mailboxSettings case above.
+		suggestion.Match = "inferenceClassification"
+		if read {
+			suggestion.Scopes = []string{ScopeMailRead}
+		} else {
+			suggestion.Scopes = []string{ScopeMailReadWrite}
+		}
+		suggestion.Notes = append(suggestion.Notes,
+			"Focused Inbox overrides use Mail.* despite looking like a mailbox setting; MailboxSettings.* does not cover them.")
 	case strings.Contains(path, "/sendmail"):
 		suggestion.Match = "sendMail"
 		suggestion.Scopes = []string{ScopeMailSend}

@@ -1,6 +1,9 @@
 package msgraph
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestFindPermission(t *testing.T) {
 	permission, ok := FindPermission("mail.readwrite")
@@ -105,6 +108,33 @@ func TestSuggestsMailboxSettingsScopes(t *testing.T) {
 	for _, scope := range append(read.Scopes, write.Scopes...) {
 		if scope == ScopeMailRead || scope == ScopeMailReadWrite {
 			t.Fatalf("suggested a mail scope %q for mailbox settings", scope)
+		}
+	}
+}
+
+// TestInferenceClassificationUsesMailScopes pins a routing rule that reads
+// backwards. Focused Inbox overrides look like a mailbox setting and are
+// governed by the mail permissions instead, so a caller holding
+// MailboxSettings.ReadWrite alone is refused.
+func TestInferenceClassificationUsesMailScopes(t *testing.T) {
+	t.Parallel()
+
+	const path = "/me/inferenceClassification/overrides"
+	for _, tc := range []struct {
+		method string
+		want   string
+	}{
+		{http.MethodGet, ScopeMailRead},
+		{http.MethodPost, ScopeMailReadWrite},
+		{http.MethodPatch, ScopeMailReadWrite},
+		{http.MethodDelete, ScopeMailReadWrite},
+	} {
+		suggestion := SuggestDelegatedScopes(tc.method, path)
+		if len(suggestion.Scopes) != 1 || suggestion.Scopes[0] != tc.want {
+			t.Errorf("%s %s = %v, want [%s]", tc.method, path, suggestion.Scopes, tc.want)
+		}
+		if ScopeSatisfies([]string{ScopeMailboxSettingsReadWrite}, suggestion.Scopes[0]) {
+			t.Errorf("%s: MailboxSettings.ReadWrite must not satisfy %s", tc.method, suggestion.Scopes[0])
 		}
 	}
 }
