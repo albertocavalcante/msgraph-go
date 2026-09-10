@@ -82,3 +82,29 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// Mailbox settings need their own permission, and the service does not say so
+// when it is missing: it answers a bare ErrorAccessDenied. The suggestion is
+// the only place a caller can learn what to ask for.
+func TestSuggestsMailboxSettingsScopes(t *testing.T) {
+	read := SuggestDelegatedScopes("GET", "/me/mailboxSettings")
+	if len(read.Scopes) != 1 || read.Scopes[0] != ScopeMailboxSettingsRead {
+		t.Fatalf("read scopes = %v, want %s", read.Scopes, ScopeMailboxSettingsRead)
+	}
+	if len(read.Notes) == 0 {
+		t.Fatal("no note explaining why Mail.ReadWrite is not enough")
+	}
+
+	write := SuggestDelegatedScopes("PATCH", "/me/mailboxSettings")
+	if len(write.Scopes) != 1 || write.Scopes[0] != ScopeMailboxSettingsReadWrite {
+		t.Fatalf("write scopes = %v, want %s", write.Scopes, ScopeMailboxSettingsReadWrite)
+	}
+
+	// Mail scopes must not be suggested for it, which was the mistake that
+	// made this a production-only discovery.
+	for _, scope := range append(read.Scopes, write.Scopes...) {
+		if scope == ScopeMailRead || scope == ScopeMailReadWrite {
+			t.Fatalf("suggested a mail scope %q for mailbox settings", scope)
+		}
+	}
+}

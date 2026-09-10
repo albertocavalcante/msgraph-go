@@ -21,21 +21,28 @@ const (
 )
 
 const (
-	ScopeUserRead           = "User.Read"
-	ScopeUserReadBasicAll   = "User.ReadBasic.All"
-	ScopeUserReadWriteAll   = "User.ReadWrite.All"
-	ScopeMailRead           = "Mail.Read"
-	ScopeMailReadWrite      = "Mail.ReadWrite"
-	ScopeMailSend           = "Mail.Send"
-	ScopeCalendarsRead      = "Calendars.Read"
-	ScopeCalendarsReadWrite = "Calendars.ReadWrite"
-	ScopeContactsRead       = "Contacts.Read"
-	ScopeContactsReadWrite  = "Contacts.ReadWrite"
-	ScopeFilesRead          = "Files.Read"
-	ScopeFilesReadWrite     = "Files.ReadWrite"
-	ScopeGroupReadAll       = "Group.Read.All"
-	ScopeGroupReadWriteAll  = "Group.ReadWrite.All"
-	ScopeDirectoryReadAll   = "Directory.Read.All"
+	ScopeUserRead         = "User.Read"
+	ScopeUserReadBasicAll = "User.ReadBasic.All"
+	ScopeUserReadWriteAll = "User.ReadWrite.All"
+	ScopeMailRead         = "Mail.Read"
+	ScopeMailReadWrite    = "Mail.ReadWrite"
+	ScopeMailSend         = "Mail.Send"
+	// ScopeMailboxSettingsRead is required to read mailbox settings, including
+	// automatic replies. Mail.ReadWrite does not cover it, and the service
+	// answers a request without it with a bare ErrorAccessDenied that names no
+	// permission.
+	ScopeMailboxSettingsRead = "MailboxSettings.Read"
+	// ScopeMailboxSettingsReadWrite is required to change them.
+	ScopeMailboxSettingsReadWrite = "MailboxSettings.ReadWrite"
+	ScopeCalendarsRead            = "Calendars.Read"
+	ScopeCalendarsReadWrite       = "Calendars.ReadWrite"
+	ScopeContactsRead             = "Contacts.Read"
+	ScopeContactsReadWrite        = "Contacts.ReadWrite"
+	ScopeFilesRead                = "Files.Read"
+	ScopeFilesReadWrite           = "Files.ReadWrite"
+	ScopeGroupReadAll             = "Group.Read.All"
+	ScopeGroupReadWriteAll        = "Group.ReadWrite.All"
+	ScopeDirectoryReadAll         = "Directory.Read.All"
 )
 
 // Permission describes a known Microsoft Graph permission.
@@ -87,6 +94,8 @@ var CommonPermissions = []Permission{
 	},
 	{Name: ScopeUserReadBasicAll, Kind: "delegated"},
 	{Name: ScopeUserReadWriteAll, Kind: "delegated", AdminConsentRequired: true},
+	{Name: ScopeMailboxSettingsRead, Kind: "delegated", PersonalAccountsAllowed: true},
+	{Name: ScopeMailboxSettingsReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeCalendarsRead, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeCalendarsReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeContactsRead, Kind: "delegated", PersonalAccountsAllowed: true},
@@ -124,6 +133,15 @@ func SuggestDelegatedScopes(method, rawPath string) PermissionSuggestion {
 		suggestion.Match = "translateExchangeIds"
 		suggestion.Scopes = []string{ScopeUserRead}
 		suggestion.Notes = append(suggestion.Notes, "For work or school accounts, Microsoft lists User.ReadBasic.All as least privileged; User.Read keeps personal Microsoft accounts covered.")
+	case strings.Contains(path, "/mailboxsettings"):
+		suggestion.Match = "mailboxSettings"
+		if read {
+			suggestion.Scopes = []string{ScopeMailboxSettingsRead}
+		} else {
+			suggestion.Scopes = []string{ScopeMailboxSettingsReadWrite}
+		}
+		suggestion.Notes = append(suggestion.Notes,
+			"Mail.ReadWrite does not cover mailbox settings; without MailboxSettings.* the service answers ErrorAccessDenied without naming the permission.")
 	case strings.Contains(path, "/sendmail"):
 		suggestion.Match = "sendMail"
 		suggestion.Scopes = []string{ScopeMailSend}
