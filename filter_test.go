@@ -234,3 +234,80 @@ func TestParamsFilterSurvivesURLEncoding(t *testing.T) {
 		t.Fatalf("round-tripped $filter = %q, want %q", got, want)
 	}
 }
+
+// A filter must be able to report which properties it touches without anyone
+// parsing the rendered string back apart. String scanning produced nonsense
+// tokens for lambdas and for literals containing spaces.
+func TestFieldsOf(t *testing.T) {
+	sent := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		expr Expr
+		want []string
+	}{
+		{"nil", nil, nil},
+		{"comparison", Eq("isRead", false), []string{"isRead"}},
+		{"function", Contains("subject", "a b c"), []string{"subject"}},
+		{"literal with spaces", Eq("subject", "hello world and eq"), []string{"subject"}},
+		{"in", In("importance", "high", "low"), []string{"importance"}},
+		{"not", Not(Eq("isRead", true)), []string{"isRead"}},
+		{
+			"and",
+			And(Eq("isRead", false), Ge("receivedDateTime", sent)),
+			[]string{"isRead", "receivedDateTime"},
+		},
+		{
+			"nested",
+			And(Eq("isRead", false), Or(Contains("subject", "x"), Eq("importance", "high"))),
+			[]string{"isRead", "subject", "importance"},
+		},
+		{"duplicates collapse", And(Eq("isRead", false), Eq("isRead", true)), []string{"isRead"}},
+		// The lambda reports the collection, not the bound variable: c is not a
+		// property of the resource.
+		{
+			"lambda reports the collection",
+			Any("categories", "c", Eq("c", "Red Team")),
+			[]string{"categories"},
+		},
+		{"path field", Eq(Field("from", "emailAddress", "address"), "a@b.com"), []string{"from/emailAddress/address"}},
+		{"raw is opaque", Raw("subject eq 'x'"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FieldsOf(tt.expr)
+			if len(got) != len(tt.want) {
+				t.Fatalf("FieldsOf = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("FieldsOf = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestContainsRaw(t *testing.T) {
+	tests := []struct {
+		name string
+		expr Expr
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain", Eq("isRead", true), false},
+		{"raw", Raw("x eq 1"), true},
+		{"raw nested in and", And(Eq("isRead", true), Raw("x eq 1")), true},
+		{"raw under not", Not(Raw("x eq 1")), true},
+		{"raw in lambda", Any("categories", "c", Raw("c eq 'x'")), true},
+		{"no raw nested", And(Eq("a", 1), Or(Eq("b", 2), Not(Eq("c", 3)))), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ContainsRaw(tt.expr); got != tt.want {
+				t.Fatalf("ContainsRaw = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -14,6 +14,11 @@ type Expr interface {
 	// ODataFilter renders the expression as a $filter value. The result is not
 	// URL-encoded; [Params] handles that.
 	ODataFilter() string
+	// fields reports the property paths the expression references, so callers
+	// can reason about a filter without parsing it back out of a string. It is
+	// unexported to keep Expr a closed set: every implementation lives here,
+	// and a caller cannot produce one whose fields are unknowable.
+	fields() []string
 }
 
 // Literal constrains the Go types that have an unambiguous OData literal
@@ -30,6 +35,10 @@ type Literal interface {
 type rawExpr string
 
 func (e rawExpr) ODataFilter() string { return string(e) }
+
+// fields returns nil: a raw fragment is opaque by construction, so callers
+// must treat it as referencing something unknown.
+func (e rawExpr) fields() []string { return nil }
 
 // Raw wraps a hand-written OData fragment. It is the escape hatch for
 // expressions this package does not model; the caller owns escaping.
@@ -49,6 +58,8 @@ type comparisonExpr struct {
 func (e comparisonExpr) ODataFilter() string {
 	return e.field + " " + e.operator + " " + e.literal
 }
+
+func (e comparisonExpr) fields() []string { return []string{e.field} }
 
 func compare[T Literal](field, operator string, value T) Expr {
 	return comparisonExpr{field: field, operator: operator, literal: LiteralOf(value)}
@@ -92,6 +103,8 @@ func (e functionExpr) ODataFilter() string {
 	return e.name + "(" + e.field + "," + e.arg + ")"
 }
 
+func (e functionExpr) fields() []string { return []string{e.field} }
+
 // Contains builds "contains(field,'value')".
 func Contains(field, value string) Expr {
 	return functionExpr{name: "contains", field: field, arg: quoteODataString(value)}
@@ -118,8 +131,19 @@ func In[T Literal](field string, values ...T) Expr {
 	for i, value := range values {
 		parts[i] = LiteralOf(value)
 	}
-	return rawExpr(field + " in (" + strings.Join(parts, ",") + ")")
+	return inExpr{field: field, literals: parts}
 }
+
+type inExpr struct {
+	field    string
+	literals []string
+}
+
+func (e inExpr) ODataFilter() string {
+	return e.field + " in (" + strings.Join(e.literals, ",") + ")"
+}
+
+func (e inExpr) fields() []string { return []string{e.field} }
 
 type logicalExpr struct {
 	operator string
@@ -132,6 +156,14 @@ func (e logicalExpr) ODataFilter() string {
 		parts[i] = operand.ODataFilter()
 	}
 	return "(" + strings.Join(parts, " "+e.operator+" ") + ")"
+}
+
+func (e logicalExpr) fields() []string {
+	var all []string
+	for _, operand := range e.operands {
+		all = append(all, operand.fields()...)
+	}
+	return all
 }
 
 func combine(operator string, operands []Expr) Expr {
@@ -163,6 +195,8 @@ type notExpr struct{ operand Expr }
 
 func (e notExpr) ODataFilter() string { return "not (" + e.operand.ODataFilter() + ")" }
 
+func (e notExpr) fields() []string { return e.operand.fields() }
+
 // Not negates operand. A nil operand yields nil.
 func Not(operand Expr) Expr {
 	if operand == nil {
@@ -182,6 +216,11 @@ func (e lambdaExpr) ODataFilter() string {
 	return e.collection + "/" + e.operator + "(" + e.variable + ":" + e.predicate.ODataFilter() + ")"
 }
 
+// fields reports the collection being iterated. The predicate's own fields are
+// bound to the lambda variable and are not properties of the resource, so they
+// would be meaningless to a caller reasoning about indexes.
+func (e lambdaExpr) fields() []string { return []string{e.collection} }
+
 // Any builds a collection lambda such as
 // "toRecipients/any(r:r/emailAddress/address eq 'a@b.com')". A nil predicate
 // yields nil.
@@ -199,6 +238,53 @@ func lambda(collection, operator, variable string, predicate Expr) Expr {
 		return nil
 	}
 	return lambdaExpr{collection: collection, operator: operator, variable: variable, predicate: predicate}
+}
+
+// FieldsOf reports the property paths a filter references, walking the
+// expression tree rather than parsing the rendered string. Callers use it to
+// decide whether a service will accept a filter — Microsoft Graph, for
+// instance, restricts which properties may be filtered while sorting.
+//
+// A [Raw] fragment is opaque and contributes no fields, so a filter containing
+// one cannot be fully analyzed; [ContainsRaw] reports that case.
+func FieldsOf(filter Expr) []string {
+	if filter == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var unique []string
+	for _, field := range filter.fields() {
+		if field == "" || seen[field] {
+			continue
+		}
+		seen[field] = true
+		unique = append(unique, field)
+	}
+	return unique
+}
+
+// ContainsRaw reports whether a filter includes a [Raw] fragment, whose
+// referenced properties cannot be determined.
+func ContainsRaw(filter Expr) bool {
+	switch e := filter.(type) {
+	case nil:
+		return false
+	case rawExpr:
+		return true
+	case logicalExpr:
+		for _, operand := range e.operands {
+			if ContainsRaw(operand) {
+				return true
+			}
+		}
+		return false
+	case notExpr:
+		return ContainsRaw(e.operand)
+	case lambdaExpr:
+		return ContainsRaw(e.predicate)
+	default:
+		return false
+	}
 }
 
 // Field joins property segments into an OData path such as
