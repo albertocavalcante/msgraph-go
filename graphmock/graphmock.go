@@ -216,6 +216,17 @@ func Delta[T any](items []T, deltaLink string) Response {
 	return marshal(http.StatusOK, msgraph.Page[T]{Value: items, DeltaLink: deltaLink})
 }
 
+// Raw responds with an arbitrary body and content type, for the endpoints that
+// do not speak JSON — a message's MIME representation, or an attachment's
+// bytes.
+func Raw(status int, contentType string, body []byte) Response {
+	response := Response{Status: status, body: body}
+	if contentType != "" {
+		response.Header = http.Header{"Content-Type": []string{contentType}}
+	}
+	return response
+}
+
 // Empty responds with a status and no body, for the 202 and 204 replies Graph
 // gives to sends, moves, and deletes.
 func Empty(status int) Response { return Response{Status: status} }
@@ -317,7 +328,7 @@ func write(w http.ResponseWriter, response Response) {
 			w.Header().Add(name, value)
 		}
 	}
-	if len(response.body) > 0 {
+	if len(response.body) > 0 && w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	status := response.Status
