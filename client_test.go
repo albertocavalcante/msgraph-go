@@ -479,7 +479,7 @@ func TestDecodeResponseStreamsWriterBeforeReadError(t *testing.T) {
 		Body:       body,
 	}
 	var out bytes.Buffer
-	_, err := decodeResponse(resp, &out)
+	_, err := (&Client{}).decodeResponse(resp, &out)
 	if err == nil {
 		t.Fatal("expected read error")
 	}

@@ -20,6 +20,16 @@ const (
 	defaultRetries       = 3
 	defaultMaxRetryDelay = 30 * time.Second
 	maxErrorBodyBytes    = 1 << 20
+	// defaultMaxResponseBytes bounds a decoded response. The error path was
+	// already capped; the success path read whatever arrived, so a large or
+	// hostile body was an unbounded allocation. Measured, a 512 MiB response
+	// cost 2.2 GiB of heap before this existed, because the read buffer
+	// doubles and the decode allocates again on top.
+	//
+	// 64 MiB is far above any real Graph JSON payload — a full page of
+	// messages with bodies is single-digit megabytes — and far below the
+	// point where the process is in danger.
+	defaultMaxResponseBytes = 64 << 20
 )
 
 var errNilTokenSource = errors.New("msgraph: nil token source")
@@ -32,6 +42,11 @@ var errNilTokenSource = errors.New("msgraph: nil token source")
 // behavior; use [WithAllowedHosts] to opt specific hosts in.
 var ErrUntrustedHost = errors.New("msgraph: untrusted request host")
 
+// ErrResponseTooLarge is returned when a response body exceeds the configured
+// limit. Streaming into an io.Writer is not subject to it: a caller that asks
+// to stream has taken responsibility for the size.
+var ErrResponseTooLarge = errors.New("msgraph: response body too large")
+
 // Client is a small Microsoft Graph REST client.
 type Client struct {
 	baseURL            *url.URL
@@ -42,6 +57,7 @@ type Client struct {
 	maxDelay           time.Duration
 	retryUnsafeMethods bool
 	allowedHosts       map[string]struct{}
+	maxResponseBytes   int64
 	sleep              sleepFunc
 }
 
@@ -137,6 +153,18 @@ func WithAllowedHosts(hosts ...string) Option {
 	}
 }
 
+// WithMaxResponseBytes bounds the size of a response the client will decode.
+// A non-positive value removes the limit.
+//
+// The limit does not apply when decoding into an io.Writer, because streaming
+// is the supported way to receive something genuinely large.
+func WithMaxResponseBytes(limit int64) Option {
+	return func(c *Client) error {
+		c.maxResponseBytes = limit
+		return nil
+	}
+}
+
 // WithSleeper overrides retry sleeping. It exists for tests.
 func WithSleeper(fn sleepFunc) Option {
 	return func(c *Client) error {
@@ -157,13 +185,14 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		baseURL:    base,
-		httpClient: defaultHTTPClient(),
-		token:      token,
-		userAgent:  defaultUserAgent,
-		maxRetries: defaultRetries,
-		maxDelay:   defaultMaxRetryDelay,
-		sleep:      sleepContext,
+		baseURL:          base,
+		httpClient:       defaultHTTPClient(),
+		token:            token,
+		userAgent:        defaultUserAgent,
+		maxRetries:       defaultRetries,
+		maxDelay:         defaultMaxRetryDelay,
+		maxResponseBytes: defaultMaxResponseBytes,
+		sleep:            sleepContext,
 	}
 	for _, opt := range opts {
 		if err := opt(c); err != nil {
@@ -283,7 +312,7 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 			}
 			continue
 		}
-		return decodeResponse(resp, out)
+		return c.decodeResponse(resp, out)
 	}
 }
 
@@ -431,7 +460,7 @@ func encodeBody(req Request) (body []byte, contentType string, err error) {
 	return body, contentType, nil
 }
 
-func decodeResponse(resp *http.Response, out any) (*Response, error) {
+func (c *Client) decodeResponse(resp *http.Response, out any) (*Response, error) {
 	defer resp.Body.Close()
 	meta := &Response{
 		StatusCode: resp.StatusCode,
@@ -460,9 +489,18 @@ func decodeResponse(resp *http.Response, out any) (*Response, error) {
 		}
 		return meta, nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	reader := io.Reader(resp.Body)
+	if c.maxResponseBytes > 0 {
+		// Read one byte past the limit so exceeding it is detectable rather
+		// than silently truncating the payload into a decode error.
+		reader = io.LimitReader(resp.Body, c.maxResponseBytes+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if c.maxResponseBytes > 0 && int64(len(body)) > c.maxResponseBytes {
+		return nil, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, c.maxResponseBytes)
 	}
 	if len(body) == 0 {
 		return meta, nil

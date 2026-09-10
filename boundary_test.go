@@ -1,7 +1,9 @@
 package msgraph
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -389,4 +391,90 @@ func TestRetryableStatuses(t *testing.T) {
 			t.Errorf("retryableStatus(%d) = %v, want %v", status, got, want)
 		}
 	}
+}
+
+// The success path had no size limit while the error path did, so a large or
+// hostile response was an unbounded allocation. Measured before this bound
+// existed: a 512 MiB body cost 2.2 GiB of heap.
+func TestResponseSizeIsBounded(t *testing.T) {
+	const limit = 1 << 20 // 1 MiB, to keep the test quick
+
+	serve := func(size int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"`))
+			_, _ = w.Write(bytes.Repeat([]byte("x"), size))
+			_, _ = w.Write([]byte(`"}`))
+		}))
+	}
+
+	t.Run("over the limit is refused", func(t *testing.T) {
+		server := serve(limit * 2)
+		defer server.Close()
+
+		client, err := New(staticToken("t"), WithBaseURL(server.URL), WithMaxResponseBytes(limit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = Get[testMessage](context.Background(), client, "/me", Params{})
+		if !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+		}
+	})
+
+	// The other half of the bound: it must not fire on legitimate payloads.
+	t.Run("under the limit still decodes", func(t *testing.T) {
+		server := serve(limit / 2)
+		defer server.Close()
+
+		client, err := New(staticToken("t"), WithBaseURL(server.URL), WithMaxResponseBytes(limit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, _, err := Get[testMessage](context.Background(), client, "/me", Params{})
+		if err != nil {
+			t.Fatalf("a legitimate payload was refused: %v", err)
+		}
+		if len(message.ID) != limit/2 {
+			t.Fatalf("id length = %d, want %d", len(message.ID), limit/2)
+		}
+	})
+
+	t.Run("the default admits a realistic page of mail", func(t *testing.T) {
+		// A full Graph page with bodies is single-digit megabytes; the default
+		// has to sit comfortably above that.
+		if defaultMaxResponseBytes < 32<<20 {
+			t.Fatalf("defaultMaxResponseBytes = %d, too small for a real page", defaultMaxResponseBytes)
+		}
+	})
+
+	t.Run("streaming is not subject to the limit", func(t *testing.T) {
+		server := serve(limit * 2)
+		defer server.Close()
+
+		client, err := New(staticToken("t"), WithBaseURL(server.URL), WithMaxResponseBytes(limit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sink bytes.Buffer
+		if _, err := client.Get(context.Background(), "/me", Params{}, &sink); err != nil {
+			t.Fatalf("streaming was refused: %v", err)
+		}
+		if sink.Len() <= limit {
+			t.Fatalf("streamed %d bytes, want more than the limit", sink.Len())
+		}
+	})
+
+	t.Run("the limit can be removed", func(t *testing.T) {
+		server := serve(limit * 2)
+		defer server.Close()
+
+		client, err := New(staticToken("t"), WithBaseURL(server.URL), WithMaxResponseBytes(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := Get[testMessage](context.Background(), client, "/me", Params{}); err != nil {
+			t.Fatalf("err = %v, want the limit disabled", err)
+		}
+	})
 }

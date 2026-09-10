@@ -13,6 +13,15 @@ var (
 	ErrMaxPagesExceeded = errors.New("msgraph: max pages exceeded")
 )
 
+// DefaultMaxPages bounds a traversal that does not set its own limit.
+//
+// Detecting a repeated nextLink only catches a server that loops back on
+// itself. One that returns a fresh link every time is followed forever, and
+// the set of seen links grows without bound while it happens. At the largest
+// page size Graph serves this still allows several million items, far past any
+// real collection.
+const DefaultMaxPages = 10_000
+
 type pageConfig struct {
 	maxPages int
 }
@@ -20,8 +29,9 @@ type pageConfig struct {
 // PageOption configures collection iteration.
 type PageOption func(*pageConfig)
 
-// WithMaxPages stops iteration after max pages. A non-positive maxPages leaves page
-// count unlimited, though repeated nextLink values are still rejected.
+// WithMaxPages stops iteration after max pages, replacing [DefaultMaxPages]. A
+// non-positive value removes the bound entirely, which is only safe when the
+// server is trusted to terminate.
 func WithMaxPages(maxPages int) PageOption {
 	return func(c *pageConfig) {
 		c.maxPages = maxPages
@@ -31,7 +41,7 @@ func WithMaxPages(maxPages int) PageOption {
 // Pages returns an iterator over Graph collection pages.
 func Pages[T any](ctx context.Context, client *Client, path string, params Params, opts ...PageOption) iter.Seq2[Page[T], error] {
 	return func(yield func(Page[T], error) bool) {
-		cfg := pageConfig{}
+		cfg := pageConfig{maxPages: DefaultMaxPages}
 		for _, opt := range opts {
 			opt(&cfg)
 		}
