@@ -198,6 +198,47 @@ func SuggestDelegatedScopes(method, rawPath string) PermissionSuggestion {
 	return suggestion
 }
 
+// impliesScope lists the permissions that satisfy a required one. A broader
+// permission stands in for a narrower one, which is why holding Mail.ReadWrite
+// is enough where Mail.Read is asked for.
+var impliesScope = map[string][]string{
+	ScopeUserRead:                 {ScopeUserRead, ScopeUserReadBasicAll, ScopeUserReadWriteAll},
+	ScopeUserReadBasicAll:         {ScopeUserReadBasicAll, ScopeUserReadWriteAll},
+	ScopeUserReadWriteAll:         {ScopeUserReadWriteAll},
+	ScopeMailRead:                 {ScopeMailRead, ScopeMailReadWrite},
+	ScopeMailReadWrite:            {ScopeMailReadWrite},
+	ScopeMailSend:                 {ScopeMailSend, ScopeMailReadWrite},
+	ScopeMailboxSettingsRead:      {ScopeMailboxSettingsRead, ScopeMailboxSettingsReadWrite},
+	ScopeMailboxSettingsReadWrite: {ScopeMailboxSettingsReadWrite},
+	ScopeCalendarsRead:            {ScopeCalendarsRead, ScopeCalendarsReadWrite},
+	ScopeCalendarsReadWrite:       {ScopeCalendarsReadWrite},
+	ScopeContactsRead:             {ScopeContactsRead, ScopeContactsReadWrite},
+	ScopeContactsReadWrite:        {ScopeContactsReadWrite},
+	ScopeFilesRead:                {ScopeFilesRead, ScopeFilesReadWrite},
+	ScopeFilesReadWrite:           {ScopeFilesReadWrite},
+}
+
+// ScopeSatisfies reports whether the granted permissions cover the required
+// one, accounting for a broader permission standing in for a narrower one.
+//
+// Comparison is case-insensitive: the service echoes granted scopes back with
+// inconsistent casing, and treating a case difference as a missing permission
+// is a confusing way to fail.
+func ScopeSatisfies(granted []string, required string) bool {
+	accepted, known := impliesScope[required]
+	if !known {
+		accepted = []string{required}
+	}
+	for _, candidate := range accepted {
+		for _, held := range granted {
+			if strings.EqualFold(strings.TrimSpace(held), candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // MergeScopes merges scope slices, preserving first-seen spelling and order.
 func MergeScopes(values ...[]string) []string {
 	var scopes []string

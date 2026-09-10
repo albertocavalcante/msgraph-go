@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	msgraph "github.com/albertocavalcante/msgraph-go"
 )
 
 // A Constraint inspects a request and returns a rejection, or nil to let it
@@ -248,4 +250,40 @@ func isLiteralish(word string) bool {
 		}
 	}
 	return true
+}
+
+// RequireScopes refuses a request whose resource needs a permission the token
+// was not granted, the way the service does.
+//
+// This exists because of a bug that reached a real mailbox. A token is issued
+// for the scopes a client *requests*, not for everything the user has
+// consented to. Every command asked for the default mail scopes, so the
+// mailbox settings commands were refused even though consent covered them --
+// and the error told the user to grant a permission they already held. A fake
+// that answered every path identically could not have caught it: the whole
+// bug lived in the difference between paths.
+//
+// The refusal is deliberately as unhelpful as the real one. Graph answers a
+// missing delegated permission with ErrorAccessDenied and names neither the
+// permission nor the resource, so a caller that only works when the error is
+// descriptive will not work in production either.
+func RequireScopes(granted ...string) Constraint {
+	return func(req *Request) *Response {
+		suggestion := msgraph.SuggestDelegatedScopes(req.Method, req.Path)
+		// An unrecognized path carries no permission claim, so let it
+		// through: guessing here would fail tests for routes this table
+		// does not know about yet.
+		if len(suggestion.Scopes) == 0 {
+			return nil
+		}
+		// Any one of the suggested permissions is enough. They are
+		// alternatives -- read or read-write -- not a required set.
+		for _, scope := range suggestion.Scopes {
+			if msgraph.ScopeSatisfies(granted, scope) {
+				return nil
+			}
+		}
+		return reject(http.StatusForbidden, "ErrorAccessDenied",
+			"Access is denied. Check credentials and try again.")
+	}
 }
