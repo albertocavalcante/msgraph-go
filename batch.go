@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 )
 
-const maxBatchRequests = 20
+// MaxBatchRequests is the most subrequests Graph accepts in one JSON batch.
+// Callers chunking a large operation need it, and hard-coding twenty in every
+// caller is how the number drifts.
+const MaxBatchRequests = 20
+
+// maxBatchRequests is retained for internal use and equals MaxBatchRequests.
+const maxBatchRequests = MaxBatchRequests
 
 var (
 	errEmptyBatch       = errors.New("msgraph: batch requires at least one request")
@@ -103,6 +110,22 @@ func (c *Client) BatchStrict(ctx context.Context, requests []BatchRequest) ([]Ba
 		return responses, &BatchError{Responses: failed}
 	}
 	return responses, nil
+}
+
+// ErrorFromBatch builds an [APIError] from a failed subresponse, so a caller
+// splitting a bulk operation across batches can classify each failure with the
+// same helpers it uses for an ordinary request.
+//
+// It returns nil for a successful subresponse.
+func ErrorFromBatch(response BatchResponse) *APIError {
+	if response.Status >= 200 && response.Status <= 299 {
+		return nil
+	}
+	header := http.Header{}
+	for name, value := range response.Headers {
+		header.Set(name, value)
+	}
+	return parseAPIError(response.Status, header, response.Body)
 }
 
 // FailedBatchResponses returns every subresponse with a non-2xx status.

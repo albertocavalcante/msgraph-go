@@ -124,3 +124,40 @@ func TestBatchValidatesSize(t *testing.T) {
 		t.Fatalf("err = %v, want errBatchTooLarge", err)
 	}
 }
+
+// A bulk caller needs to classify each subresponse the same way it classifies
+// an ordinary request, or it has to reimplement error parsing.
+func TestErrorFromBatch(t *testing.T) {
+	if got := ErrorFromBatch(BatchResponse{ID: "1", Status: 200}); got != nil {
+		t.Fatalf("a successful subresponse produced %v", got)
+	}
+	if got := ErrorFromBatch(BatchResponse{ID: "1", Status: 204}); got != nil {
+		t.Fatalf("a 204 subresponse produced %v", got)
+	}
+
+	failure := ErrorFromBatch(BatchResponse{
+		ID:     "1",
+		Status: 404,
+		Body:   []byte(`{"error":{"code":"ErrorItemNotFound","message":"gone"}}`),
+	})
+	if failure == nil {
+		t.Fatal("a 404 subresponse produced no error")
+	}
+	if failure.StatusCode != 404 || failure.Code != "ErrorItemNotFound" {
+		t.Fatalf("error = %+v", failure)
+	}
+	// And it classifies with the ordinary helpers.
+	if !IsNotFound(failure) || !HasCode(failure, "ErrorItemNotFound") {
+		t.Fatal("the batch error does not classify like a request error")
+	}
+}
+
+// The batch limit is part of the contract for anyone chunking a bulk call.
+func TestMaxBatchRequestsIsExported(t *testing.T) {
+	if MaxBatchRequests != 20 {
+		t.Fatalf("MaxBatchRequests = %d, want 20", MaxBatchRequests)
+	}
+	if maxBatchRequests != MaxBatchRequests {
+		t.Fatal("the internal and exported batch limits disagree")
+	}
+}
