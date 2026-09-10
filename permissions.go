@@ -36,6 +36,8 @@ const (
 	ScopeMailboxSettingsReadWrite = "MailboxSettings.ReadWrite"
 	ScopeCalendarsRead            = "Calendars.Read"
 	ScopeCalendarsReadWrite       = "Calendars.ReadWrite"
+	ScopeTasksRead                = "Tasks.Read"
+	ScopeTasksReadWrite           = "Tasks.ReadWrite"
 	ScopeContactsRead             = "Contacts.Read"
 	ScopeContactsReadWrite        = "Contacts.ReadWrite"
 	ScopeFilesRead                = "Files.Read"
@@ -98,6 +100,8 @@ var CommonPermissions = []Permission{
 	{Name: ScopeMailboxSettingsReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeCalendarsRead, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeCalendarsReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
+	{Name: ScopeTasksRead, Kind: "delegated", PersonalAccountsAllowed: true},
+	{Name: ScopeTasksReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeContactsRead, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeContactsReadWrite, Kind: "delegated", PersonalAccountsAllowed: true},
 	{Name: ScopeFilesRead, Kind: "delegated", PersonalAccountsAllowed: true},
@@ -142,6 +146,16 @@ func SuggestDelegatedScopes(method, rawPath string) PermissionSuggestion {
 		}
 		suggestion.Notes = append(suggestion.Notes,
 			"Mail.ReadWrite does not cover mailbox settings; without MailboxSettings.* the service answers ErrorAccessDenied without naming the permission.")
+	case strings.HasPrefix(path, "/me/todo"):
+		// To Do is a separate service reached through Graph. It is addressed
+		// under /me/todo only: there is no delegated form for another user's
+		// lists, so this route never carries a /users/{id} prefix.
+		suggestion.Match = "todo"
+		if read {
+			suggestion.Scopes = []string{ScopeTasksRead}
+		} else {
+			suggestion.Scopes = []string{ScopeTasksReadWrite}
+		}
 	case strings.Contains(path, "/inferenceclassification"):
 		// Focused Inbox overrides read as a mailbox setting and are not one.
 		// They sit under the mail permissions, so a caller holding
@@ -225,6 +239,8 @@ var impliesScope = map[string][]string{
 	ScopeMailboxSettingsReadWrite: {ScopeMailboxSettingsReadWrite},
 	ScopeCalendarsRead:            {ScopeCalendarsRead, ScopeCalendarsReadWrite},
 	ScopeCalendarsReadWrite:       {ScopeCalendarsReadWrite},
+	ScopeTasksRead:                {ScopeTasksRead, ScopeTasksReadWrite},
+	ScopeTasksReadWrite:           {ScopeTasksReadWrite},
 	ScopeContactsRead:             {ScopeContactsRead, ScopeContactsReadWrite},
 	ScopeContactsReadWrite:        {ScopeContactsReadWrite},
 	ScopeFilesRead:                {ScopeFilesRead, ScopeFilesReadWrite},
