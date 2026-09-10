@@ -287,3 +287,66 @@ func RequireScopes(granted ...string) Constraint {
 			"Access is denied. Check credentials and try again.")
 	}
 }
+
+// ExchangeCalendarPageCap is the largest page Exchange returns for a calendar
+// view, whatever odata.maxpagesize asks for.
+const ExchangeCalendarPageCap = 1000
+
+// ExchangeCalendar returns the constraints a real Outlook calendar applies.
+//
+// The calendar rules differ from the mail ones in kind, not just in detail: a
+// calendar view is a distinct resource with required parameters rather than a
+// filtered collection, and getting that wrong produces an empty or wrong
+// answer rather than an error.
+func ExchangeCalendar() []Constraint {
+	return []Constraint{
+		RequireCalendarWindow(),
+		RejectFilterOnCalendarView(),
+	}
+}
+
+// RequireCalendarWindow refuses a calendar view that does not name the range
+// it wants.
+//
+// The service treats startDateTime and endDateTime as required parameters of
+// the resource, not as an optional filter, and answers a request without them
+// with ErrorInvalidArgument.
+func RequireCalendarWindow() Constraint {
+	return func(r *Request) *Response {
+		if !strings.Contains(strings.ToLower(r.Path), "/calendarview") {
+			return nil
+		}
+		start, end := r.Query.Raw.Get("startDateTime"), r.Query.Raw.Get("endDateTime")
+		if start == "" || end == "" {
+			return reject(http.StatusBadRequest, "ErrorInvalidArgument",
+				"The startDateTime and endDateTime parameters are required for a calendar view.")
+		}
+		// A backwards range is accepted by the service and answers nothing,
+		// which reads as a free afternoon rather than as a mistake.
+		if start > end {
+			return reject(http.StatusBadRequest, "ErrorInvalidArgument",
+				"startDateTime must be earlier than endDateTime.")
+		}
+		return nil
+	}
+}
+
+// RejectFilterOnCalendarView refuses a $filter on start or end in a calendar
+// view.
+//
+// The window is what selects events; expressing it as a filter as well is a
+// misunderstanding the service does not correct, because it silently ignores
+// the filter and returns the whole window.
+func RejectFilterOnCalendarView() Constraint {
+	return func(r *Request) *Response {
+		if !strings.Contains(strings.ToLower(r.Path), "/calendarview") {
+			return nil
+		}
+		filter := strings.ToLower(r.Query.Filter)
+		if strings.Contains(filter, "start/") || strings.Contains(filter, "end/") {
+			return reject(http.StatusBadRequest, "ErrorInvalidUrlQueryFilter",
+				"A calendar view is bounded by startDateTime and endDateTime, not by a filter on start or end.")
+		}
+		return nil
+	}
+}
