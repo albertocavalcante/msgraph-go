@@ -1,6 +1,7 @@
 package graphmock
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -348,5 +349,127 @@ func RejectFilterOnCalendarView() Constraint {
 				"A calendar view is bounded by startDateTime and endDateTime, not by a filter on start or end.")
 		}
 		return nil
+	}
+}
+
+// ExchangeOutlook returns the constraints that apply across an Outlook
+// mailbox, beyond the mail and calendar sets.
+//
+// Each one here was a bug before it was a constraint. The service does not
+// refuse these in a way anyone would guess, so a fake that answered
+// optimistically let the mistake through and the suite stayed green.
+func ExchangeOutlook() []Constraint {
+	return []Constraint{
+		RequireRuleSequence(),
+		RequireAllDayAtMidnight(),
+	}
+}
+
+// RequireRuleSequence refuses a new inbox rule that does not say where it runs
+// in the order.
+//
+// The service requires a positive sequence and will not choose one. It answers
+// a rule without it with a MessageRuleValidationError naming the field and not
+// the remedy, so every rule created with a default-constructed body failed --
+// which is every rule, until something tried it against a real mailbox.
+func RequireRuleSequence() Constraint {
+	return func(r *Request) *Response {
+		if r.Method != http.MethodPost || !strings.Contains(strings.ToLower(r.Path), "messagerules") {
+			return nil
+		}
+		var rule struct {
+			Sequence *int32 `json:"sequence"`
+		}
+		if err := json.Unmarshal(r.Body, &rule); err != nil {
+			return nil
+		}
+		if rule.Sequence == nil || *rule.Sequence <= 0 {
+			return reject(http.StatusBadRequest, "MessageRuleValidationError",
+				"ErrorCode: 'InvalidValue', Message: 'The value isn't valid.', Field: 'Sequence'.")
+		}
+		return nil
+	}
+}
+
+// RequireAllDayAtMidnight refuses an all-day event whose ends are not midnight.
+//
+// An all-day event is a pair of calendar dates rather than instants, and the
+// service enforces that by requiring both ends at midnight. It reports the
+// refusal without naming which end was wrong, and a client reading dates in a
+// local zone produces exactly this shape without noticing.
+func RequireAllDayAtMidnight() Constraint {
+	return func(r *Request) *Response {
+		if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+			return nil
+		}
+		if !strings.Contains(strings.ToLower(r.Path), "/events") {
+			return nil
+		}
+		var event struct {
+			IsAllDay bool `json:"isAllDay"`
+			Start    *struct {
+				DateTime string `json:"dateTime"`
+			} `json:"start"`
+			End *struct {
+				DateTime string `json:"dateTime"`
+			} `json:"end"`
+		}
+		if err := json.Unmarshal(r.Body, &event); err != nil || !event.IsAllDay {
+			return nil
+		}
+		for _, end := range []*struct {
+			DateTime string `json:"dateTime"`
+		}{event.Start, event.End} {
+			if end == nil {
+				continue
+			}
+			if !atMidnight(end.DateTime) {
+				return reject(http.StatusBadRequest, "ErrorInvalidTimeForEvent",
+					"The start and end times of an all-day event must be midnight.")
+			}
+		}
+		return nil
+	}
+}
+
+// atMidnight reports whether a Graph wall-clock reading sits at midnight. The
+// zone half is irrelevant: the service checks the clock it was sent, which is
+// the whole reason a client converting to a local zone trips this.
+func atMidnight(dateTime string) bool {
+	if dateTime == "" {
+		return false
+	}
+	_, clock, hasClock := strings.Cut(dateTime, "T")
+	if !hasClock {
+		// A bare date carries no clock, so it is midnight by definition.
+		return true
+	}
+	clock = strings.TrimSuffix(clock, "Z")
+
+	// The service varies the fractional precision, so any number of trailing
+	// zeros counts as none.
+	if whole, fraction, hasFraction := strings.Cut(clock, "."); hasFraction {
+		if strings.Trim(fraction, "0") != "" {
+			return false
+		}
+		clock = whole
+	}
+	return clock == "00:00:00" || clock == "00:00"
+}
+
+// RejectStaleETag refuses a conditional write whose If-Match does not name the
+// current version.
+//
+// Exchange answers a stale mail tag with 400 and ErrorInvalidChangeKey, not
+// the 412 the header implies, so the obvious precondition check misses it and
+// the write looks like an ordinary bad request.
+func RejectStaleETag(current string) Constraint {
+	return func(r *Request) *Response {
+		match := r.Header.Get("If-Match")
+		if match == "" || match == "*" || match == current {
+			return nil
+		}
+		return reject(http.StatusBadRequest, "ErrorInvalidChangeKey",
+			"The specified change key is invalid.")
 	}
 }
