@@ -34,13 +34,29 @@ type Server struct {
 	mux         *http.ServeMux
 	http        *httptest.Server
 	constraints []Constraint
+	shapers     []Shaper
 
 	mu   sync.Mutex
 	seen []Recorded
 }
 
+// A Shaper rewrites a response on its way out, so the fake can reproduce how
+// the service presents an answer rather than only whether it gives one.
+//
+// Constraints cover refusals. This covers the other half: a service that
+// answers successfully but in a shape a client does not expect. Graph naming
+// zones with Windows identifiers is the example -- nothing is refused, and a
+// client that assumes IANA names silently computes the wrong instant.
+type Shaper func(*Request, *Response)
+
 // Option configures a [Server].
 type Option func(*Server)
+
+// WithShapers rewrites responses on their way out. Use it to reproduce how the
+// service presents an answer, as distinct from whether it refuses one.
+func WithShapers(shapers ...Shaper) Option {
+	return func(s *Server) { s.shapers = append(s.shapers, shapers...) }
+}
 
 // WithConstraints makes the fake reject requests the real service would.
 func WithConstraints(constraints ...Constraint) Option {
@@ -303,6 +319,9 @@ func (s *Server) Handle(pattern string, handler Handler) {
 		if response == nil {
 			answered := handler(request)
 			response = &answered
+		}
+		for _, shape := range s.shapers {
+			shape(request, response)
 		}
 		write(w, *response)
 	})
