@@ -47,6 +47,46 @@ const (
 	ScopeDirectoryReadAll         = "Directory.Read.All"
 )
 
+// Microsoft Teams delegated permissions.
+//
+// The chat scopes and the channel scopes are not two halves of one thing. A
+// signed-in user can consent to every chat scope themselves; not one of the
+// channel scopes can be granted without a tenant administrator, because they
+// are tenant-wide by construction -- there is no delegated permission that
+// reads only the channels you are in. That split is why AdminConsentRequired
+// is set the way it is below, and it is the difference between a remedy a
+// caller can act on and one they cannot.
+const (
+	// ScopeChatReadBasic lists chats and their members without reading what
+	// was said in them.
+	ScopeChatReadBasic = "Chat.ReadBasic"
+	// ScopeChatRead reads chat messages.
+	ScopeChatRead = "Chat.Read"
+	// ScopeChatReadWrite reads chat messages and changes them: reactions and
+	// soft deletes need it, and ChatMessage.Send does not cover either.
+	ScopeChatReadWrite = "Chat.ReadWrite"
+	// ScopeChatMessageSend sends a chat message and nothing else. It does not
+	// permit reading the chat it posts to.
+	ScopeChatMessageSend = "ChatMessage.Send"
+	// ScopeTeamReadBasicAll lists the teams the signed-in user belongs to.
+	ScopeTeamReadBasicAll = "Team.ReadBasic.All"
+	// ScopeChannelReadBasicAll lists a team's channels. Team.ReadBasic.All
+	// does not cover it: listing teams and listing their channels are
+	// separate permissions.
+	ScopeChannelReadBasicAll = "Channel.ReadBasic.All"
+	// ScopeChannelMessageReadAll reads channel messages and their replies.
+	ScopeChannelMessageReadAll = "ChannelMessage.Read.All"
+	// ScopeChannelMessageSend posts to a channel. Unlike its read
+	// counterpart it is user-consentable, so an app can be allowed to post
+	// where it is not allowed to read.
+	ScopeChannelMessageSend = "ChannelMessage.Send"
+	// ScopePresenceRead reads the signed-in user's own presence.
+	ScopePresenceRead = "Presence.Read"
+	// ScopePresenceReadAll reads anyone's presence, and is a different
+	// permission rather than a wider setting of the same one.
+	ScopePresenceReadAll = "Presence.Read.All"
+)
+
 // Permission describes a known Microsoft Graph permission.
 type Permission struct {
 	Name                    string
@@ -109,6 +149,20 @@ var CommonPermissions = []Permission{
 	{Name: ScopeGroupReadAll, Kind: "delegated", AdminConsentRequired: true},
 	{Name: ScopeGroupReadWriteAll, Kind: "delegated", AdminConsentRequired: true},
 	{Name: ScopeDirectoryReadAll, Kind: "delegated", AdminConsentRequired: true},
+
+	// Teams. None are valid for personal Microsoft accounts: every Teams
+	// endpoint is documented work-or-school only, and a consumer account is
+	// refused at the identity service rather than at the API.
+	{Name: ScopeChatReadBasic, Kind: "delegated"},
+	{Name: ScopeChatRead, Kind: "delegated"},
+	{Name: ScopeChatReadWrite, Kind: "delegated"},
+	{Name: ScopeChatMessageSend, Kind: "delegated"},
+	{Name: ScopeTeamReadBasicAll, Kind: "delegated", AdminConsentRequired: true},
+	{Name: ScopeChannelReadBasicAll, Kind: "delegated", AdminConsentRequired: true},
+	{Name: ScopeChannelMessageReadAll, Kind: "delegated", AdminConsentRequired: true},
+	{Name: ScopeChannelMessageSend, Kind: "delegated"},
+	{Name: ScopePresenceRead, Kind: "delegated"},
+	{Name: ScopePresenceReadAll, Kind: "delegated", AdminConsentRequired: true},
 }
 
 // FindPermission returns a known permission by name or ID.
@@ -172,6 +226,67 @@ func SuggestDelegatedScopes(method, rawPath string) PermissionSuggestion {
 	case strings.Contains(path, "/sendmail"):
 		suggestion.Match = "sendMail"
 		suggestion.Scopes = []string{ScopeMailSend}
+	// The Teams cases must precede the mail case below. Both services call a
+	// collection "messages", the mail case matches that segment anywhere in
+	// the path, and so /chats/{id}/messages resolved to Mail.Read -- naming a
+	// permission that cannot grant the request, to a caller who very likely
+	// holds no mail permission at all.
+	case strings.Contains(path, "/search/query"):
+		suggestion.Match = "search"
+		suggestion.Scopes = []string{ScopeChatRead}
+		suggestion.Notes = append(suggestion.Notes,
+			"Search reaches only what the caller was already permitted to read: with Chat.Read it returns chat hits and no channel hits, without saying so. Channel results additionally need ChannelMessage.Read.All.")
+	case pathContainsAnySegment(path, "presence", "presences"):
+		suggestion.Match = "presence"
+		if strings.HasPrefix(path, "/me/") {
+			suggestion.Scopes = []string{ScopePresenceRead}
+		} else {
+			suggestion.Scopes = []string{ScopePresenceReadAll}
+			suggestion.Notes = append(suggestion.Notes,
+				"Reading another user's presence needs Presence.Read.All; Presence.Read covers only your own.")
+		}
+	case pathContainsAnySegment(path, "chats"):
+		if pathContainsAnySegment(path, "messages") {
+			suggestion.Match = "chatMessage"
+			switch {
+			case read:
+				suggestion.Scopes = []string{ScopeChatRead}
+			case pathContainsAnySegment(path, "setreaction", "unsetreaction", "softdelete", "undosoftdelete"):
+				// Reacting and deleting are not sending. ChatMessage.Send
+				// covers posting a message and nothing that happens to one
+				// afterwards, so these need the broader chat permission.
+				suggestion.Scopes = []string{ScopeChatReadWrite}
+			default:
+				suggestion.Scopes = []string{ScopeChatMessageSend}
+			}
+		} else {
+			suggestion.Match = "chat"
+			if read {
+				suggestion.Scopes = []string{ScopeChatReadBasic}
+			} else {
+				suggestion.Scopes = []string{ScopeChatReadWrite}
+			}
+		}
+	case pathContainsAnySegment(path, "teams", "joinedteams", "channels"):
+		switch {
+		case pathContainsAnySegment(path, "messages", "replies"):
+			suggestion.Match = "channelMessage"
+			if read {
+				suggestion.Scopes = []string{ScopeChannelMessageReadAll}
+			} else {
+				suggestion.Scopes = []string{ScopeChannelMessageSend}
+			}
+		case pathContainsAnySegment(path, "channels"):
+			suggestion.Match = "channel"
+			suggestion.Scopes = []string{ScopeChannelReadBasicAll}
+		default:
+			suggestion.Match = "team"
+			suggestion.Scopes = []string{ScopeTeamReadBasicAll}
+		}
+		if len(suggestion.Scopes) > 0 && suggestion.Scopes[0] != ScopeChannelMessageSend {
+			suggestion.Notes = append(suggestion.Notes,
+				"Team and channel permissions are tenant-wide and require administrator consent; a signed-in user cannot grant them.")
+		}
 	case pathContainsAnySegment(path, "messages", "mailfolders"):
 		suggestion.Match = "mail"
 		if read {
@@ -245,6 +360,22 @@ var impliesScope = map[string][]string{
 	ScopeContactsReadWrite:        {ScopeContactsReadWrite},
 	ScopeFilesRead:                {ScopeFilesRead, ScopeFilesReadWrite},
 	ScopeFilesReadWrite:           {ScopeFilesReadWrite},
+
+	// The chat scopes nest; the channel scopes do not nest into them. Holding
+	// every chat permission grants nothing in a channel, which is the one
+	// substitution a caller is most likely to assume works.
+	ScopeChatReadBasic:   {ScopeChatReadBasic, ScopeChatRead, ScopeChatReadWrite},
+	ScopeChatRead:        {ScopeChatRead, ScopeChatReadWrite},
+	ScopeChatReadWrite:   {ScopeChatReadWrite},
+	ScopeChatMessageSend: {ScopeChatMessageSend, ScopeChatReadWrite},
+
+	ScopeTeamReadBasicAll:      {ScopeTeamReadBasicAll, ScopeDirectoryReadAll},
+	ScopeChannelReadBasicAll:   {ScopeChannelReadBasicAll, ScopeGroupReadAll, ScopeGroupReadWriteAll, ScopeDirectoryReadAll},
+	ScopeChannelMessageReadAll: {ScopeChannelMessageReadAll, ScopeGroupReadAll, ScopeGroupReadWriteAll},
+	ScopeChannelMessageSend:    {ScopeChannelMessageSend, ScopeGroupReadWriteAll},
+
+	ScopePresenceRead:    {ScopePresenceRead, ScopePresenceReadAll},
+	ScopePresenceReadAll: {ScopePresenceReadAll},
 }
 
 // ScopeSatisfies reports whether the granted permissions cover the required

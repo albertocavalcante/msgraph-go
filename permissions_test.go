@@ -112,6 +112,130 @@ func TestSuggestsMailboxSettingsScopes(t *testing.T) {
 	}
 }
 
+// TestTeamsPathsDoNotResolveToMailScopes pins the routing rule that a Teams
+// message path is not a mail path.
+//
+// Both spell a collection "messages", and the mail case matches any path with
+// that segment, so /chats/{id}/messages and a channel's messages resolved to
+// Mail.Read. Nothing caught it because the suggestion is only consulted by
+// RequireScopes, which no Teams test existed to run -- so the wrong answer was
+// never returned to anyone who would notice. A caller holding every Teams
+// permission and no mail permission would have been refused, citing a mail
+// scope that has nothing to do with the request.
+//
+// The expected scopes are spelled as literals rather than referenced through
+// the new constants, on purpose. The constants are part of what is under test:
+// written against them, this would keep passing through a typo in one,
+// agreeing with the code about a permission name the identity service has
+// never heard of.
+func TestTeamsPathsDoNotResolveToMailScopes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		want   string
+		match  string
+	}{
+		{"chat list", http.MethodGet, "/chats", "Chat.ReadBasic", "chat"},
+		{"chat messages", http.MethodGet, "/chats/19:abc@thread.v2/messages", "Chat.Read", "chatMessage"},
+		{"chat message send", http.MethodPost, "/chats/19:abc@thread.v2/messages", "ChatMessage.Send", "chatMessage"},
+		{"joined teams", http.MethodGet, "/me/joinedTeams", "Team.ReadBasic.All", "team"},
+		{"channels", http.MethodGet, "/teams/id/channels", "Channel.ReadBasic.All", "channel"},
+		{"channel messages", http.MethodGet, "/teams/id/channels/19:x@thread.tacv2/messages", "ChannelMessage.Read.All", "channelMessage"},
+		{"channel replies", http.MethodGet, "/teams/id/channels/19:x@thread.tacv2/messages/1/replies", "ChannelMessage.Read.All", "channelMessage"},
+		{"presence", http.MethodGet, "/me/presence", "Presence.Read", "presence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			suggestion := SuggestDelegatedScopes(tc.method, tc.path)
+
+			// The negative control, and the whole reason this test exists: a
+			// mail scope for a Teams path is not merely imprecise, it names a
+			// permission that cannot grant the request.
+			for _, scope := range suggestion.Scopes {
+				if scope == ScopeMailRead || scope == ScopeMailReadWrite || scope == ScopeMailSend {
+					t.Fatalf("%s %s suggested mail scope %q", tc.method, tc.path, scope)
+				}
+			}
+			if len(suggestion.Scopes) == 0 || suggestion.Scopes[0] != tc.want {
+				t.Fatalf("%s %s scopes = %v, want %s first", tc.method, tc.path, suggestion.Scopes, tc.want)
+			}
+			if suggestion.Match != tc.match {
+				t.Fatalf("%s %s match = %q, want %q", tc.method, tc.path, suggestion.Match, tc.match)
+			}
+		})
+	}
+}
+
+// TestChannelScopesAreMarkedAdminOnly pins which Teams permissions a signed-in
+// user can consent to for themselves.
+//
+// It matters because the remedy differs. A missing Chat.Read is fixed by
+// signing in again and asking for it; a missing ChannelMessage.Read.All is
+// not, and telling someone to grant it is advice they cannot act on. A caller
+// that treats the two alike loops against a consent screen that will never
+// offer the second.
+func TestChannelScopesAreMarkedAdminOnly(t *testing.T) {
+	t.Parallel()
+
+	for name, wantAdmin := range map[string]bool{
+		"Chat.ReadBasic":          false,
+		"Chat.Read":               false,
+		"Chat.ReadWrite":          false,
+		"ChatMessage.Send":        false,
+		"Presence.Read":           false,
+		"Team.ReadBasic.All":      true,
+		"Channel.ReadBasic.All":   true,
+		"ChannelMessage.Read.All": true,
+		"ChannelMessage.Send":     false,
+	} {
+		permission, ok := FindPermission(name)
+		if !ok {
+			t.Errorf("%s is not a known permission", name)
+			continue
+		}
+		if permission.AdminConsentRequired != wantAdmin {
+			t.Errorf("%s AdminConsentRequired = %v, want %v", name, permission.AdminConsentRequired, wantAdmin)
+		}
+		// None of the Teams permissions work on a personal Microsoft account;
+		// every one of these endpoints is documented as work-or-school only.
+		if permission.PersonalAccountsAllowed {
+			t.Errorf("%s must not be marked valid for personal accounts", name)
+		}
+	}
+}
+
+// TestChatScopesNest pins that the broader chat permission stands in for the
+// narrower one, which is what lets a caller holding Chat.ReadWrite skip a
+// second consent for Chat.Read.
+func TestChatScopesNest(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		granted  string
+		required string
+		want     bool
+	}{
+		{"Chat.ReadWrite", "Chat.Read", true},
+		{"Chat.ReadWrite", "Chat.ReadBasic", true},
+		{"Chat.Read", "Chat.ReadBasic", true},
+		{"Chat.ReadWrite", "ChatMessage.Send", true},
+		// Not the other way around: reading a chat does not let you post to it.
+		{"Chat.Read", "Chat.ReadWrite", false},
+		{"Chat.ReadBasic", "Chat.Read", false},
+		{"ChatMessage.Send", "Chat.Read", false},
+		// And a chat permission never reaches a channel.
+		{"Chat.ReadWrite", "ChannelMessage.Read.All", false},
+	} {
+		if got := ScopeSatisfies([]string{tc.granted}, tc.required); got != tc.want {
+			t.Errorf("ScopeSatisfies([%s], %s) = %v, want %v", tc.granted, tc.required, got, tc.want)
+		}
+	}
+}
+
 // TestInferenceClassificationUsesMailScopes pins a routing rule that reads
 // backwards. Focused Inbox overrides look like a mailbox setting and are
 // governed by the mail permissions instead, so a caller holding
