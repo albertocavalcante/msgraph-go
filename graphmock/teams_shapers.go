@@ -142,7 +142,10 @@ func TruncateExpandedMembers(limit int) Shaper {
 // against every other Graph collection -- truncates each long thread and
 // displays a conversation that stops mid-argument, with no error and no gap.
 func PageExpandedReplies(limit int) Shaper {
-	return func(_ *Request, response *Response) {
+	return func(r *Request, response *Response) {
+		if r == nil {
+			return
+		}
 		rewriteBody(response, func(node any) {
 			object, ok := node.(map[string]any)
 			if !ok {
@@ -153,7 +156,7 @@ func PageExpandedReplies(limit int) Shaper {
 				return
 			}
 			object["replies"] = replies[:limit]
-			object["replies@odata.nextLink"] = repliesLink(object)
+			object["replies@odata.nextLink"] = repliesLink(r.Path, object)
 		})
 	}
 }
@@ -236,9 +239,17 @@ func PopulateOnlyJoinedTeamsFields() Shaper {
 }
 
 // repliesLink builds the per-message continuation link for truncated replies.
-func repliesLink(message map[string]any) string {
+//
+// It is relative, and that is deliberate. The service sends an absolute link,
+// but an absolute graph.microsoft.com link is one a test can never follow: the
+// client refuses a host other than its base, so a fake emitting one makes the
+// exact behavior this shaper exists to exercise undereferenceable, and the
+// nested paging goes untested. A relative link resolves against whatever base
+// the client has -- the fake under test, the real service in production -- so
+// the same code path is exercised in both.
+func repliesLink(requestPath string, message map[string]any) string {
 	id, _ := message["id"].(string)
-	return "https://graph.microsoft.com/v1.0/teamsFake/messages/" + id + "/replies?$skiptoken=graphmock"
+	return strings.TrimRight(requestPath, "/") + "/" + id + "/replies?$skiptoken=graphmock"
 }
 
 // rewriteBody decodes a response body, applies visit to every object in it,
