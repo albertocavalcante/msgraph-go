@@ -25,6 +25,18 @@ const (
 
 	// PreferReturnRepresentation asks Graph to echo the written resource back.
 	PreferReturnRepresentation PreferDirective = "return=representation"
+
+	// PreferIncludeUnknownEnumMembers asks Graph to name evolvable enum
+	// members added since the caller's version, instead of substituting
+	// unknownFutureValue for them.
+	//
+	// Without it the substitution is silent and the response is otherwise
+	// complete, so the cost is not an error but a value the caller cannot
+	// switch on. Teams message types are the sharp case: every system event
+	// message -- a member joining, a chat renamed, a call ending -- arrives
+	// as unknownFutureValue, which in a real conversation is a large minority
+	// of the history.
+	PreferIncludeUnknownEnumMembers PreferDirective = "include-unknown-enum-members"
 )
 
 // ConsistencyLevel is a value for the ConsistencyLevel request header.
