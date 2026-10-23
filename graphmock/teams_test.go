@@ -2,8 +2,10 @@ package graphmock_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	msgraph "github.com/albertocavalcante/msgraph-go"
 	"github.com/albertocavalcante/msgraph-go/graphmock"
@@ -310,6 +312,51 @@ func TestChannelListingReturnsRootsAndPagesRepliesSeparately(t *testing.T) {
 	}
 	if page.NextLink == page.Value[0].RepliesNext {
 		t.Fatal("the reply link must be distinct from the collection's own link")
+	}
+}
+
+func TestChannelMessageQueryRejectsChatOnlyOptions(t *testing.T) {
+	t.Parallel()
+	server := teamsServer(t)
+	server.Handle("GET /teams/{team}/channels/{channel}/messages", func(_ *graphmock.Request) graphmock.Response {
+		return graphmock.Collection([]chatMessage{}, "")
+	})
+	path := "/teams/t/channels/c/messages"
+	for _, params := range []msgraph.Params{
+		{Sort: []msgraph.Order{msgraph.Desc("createdDateTime")}},
+		{Where: msgraph.Lt("createdDateTime", time.Now())},
+		{Expand: []string{"members"}},
+	} {
+		_, _, err := msgraph.Get[msgraph.Page[chatMessage]](context.Background(), server.Client(), path, params)
+		if !msgraph.IsStatus(err, http.StatusBadRequest) {
+			t.Errorf("channel query %+v: error = %v, want 400", params, err)
+		}
+	}
+}
+
+func TestChannelRepliesQueryRejectsChatOnlyOptions(t *testing.T) {
+	t.Parallel()
+	server := teamsServer(t)
+	server.Handle("GET /teams/{team}/channels/{channel}/messages/{message}/replies", func(_ *graphmock.Request) graphmock.Response {
+		return graphmock.Collection([]chatMessage{}, "")
+	})
+	path := "/teams/t/channels/c/messages/m/replies"
+	_, _, err := msgraph.Get[msgraph.Page[chatMessage]](context.Background(), server.Client(), path,
+		msgraph.Params{Sort: []msgraph.Order{msgraph.Desc("createdDateTime")}})
+	if !msgraph.IsStatus(err, http.StatusBadRequest) {
+		t.Errorf("replies query: error = %v, want 400", err)
+	}
+	_, _, err = msgraph.Get[msgraph.Page[chatMessage]](context.Background(), server.Client(), path,
+		msgraph.Params{Expand: []string{"replies"}})
+	if !msgraph.IsStatus(err, http.StatusBadRequest) {
+		t.Errorf("expanded replies query: error = %v, want 400", err)
+	}
+}
+
+func TestExpandedRepliesDefaultLimitIsTwoHundred(t *testing.T) {
+	t.Parallel()
+	if graphmock.TeamsExpandedReplyCap != 200 {
+		t.Fatalf("expanded reply limit = %d, want 200", graphmock.TeamsExpandedReplyCap)
 	}
 }
 
