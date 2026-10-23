@@ -27,7 +27,7 @@ const (
 	TeamsExpandedMemberCap = 25
 	// TeamsExpandedReplyCap is how many replies $expand=replies returns
 	// before paging the remainder through a per-message link.
-	TeamsExpandedReplyCap = 1000
+	TeamsExpandedReplyCap = 200
 	// TeamsSearchPageCap is the largest message search page.
 	TeamsSearchPageCap = 25
 )
@@ -50,6 +50,7 @@ var TeamsMessageSortableFields = []string{"createdDateTime", "lastModifiedDateTi
 // failures and none of the dangerous ones.
 func Teams() []Constraint {
 	return []Constraint{
+		RejectUnsupportedChannelMessageOptions(),
 		IgnoreMismatchedMessageFilter(),
 		RejectAscendingMessageSort(),
 		RejectUnsupportedMessageSortProperty(TeamsMessageSortableFields...),
@@ -59,6 +60,35 @@ func Teams() []Constraint {
 		CapTop("/search/query", TeamsSearchPageCap),
 		RejectSearchSort(),
 		RequireSearchEntityTypes("chatMessage"),
+	}
+}
+
+// RejectUnsupportedChannelMessageOptions keeps the channel collection and
+// reply collection distinct from chat messages. Channel roots support $top
+// and $expand=replies; replies support $top. Continuation links may also carry
+// $skiptoken. Neither endpoint accepts the chat listing's $filter or $orderby.
+func RejectUnsupportedChannelMessageOptions() Constraint {
+	return func(r *Request) *Response {
+		lower := strings.ToLower(r.Path)
+		if !strings.Contains(lower, "/teams/") || !strings.Contains(lower, "/channels/") ||
+			!strings.Contains(lower, "/messages") {
+			return nil
+		}
+		for key := range r.Query.Raw {
+			switch strings.ToLower(key) {
+			case "$top", "$skiptoken":
+				continue
+			case "$expand":
+				if !strings.Contains(lower, "/replies") {
+					continue
+				}
+			}
+			if strings.HasPrefix(key, "$") {
+				return reject(http.StatusBadRequest, "BadRequest",
+					"This OData query option is not supported for channel messages.")
+			}
+		}
+		return nil
 	}
 }
 
