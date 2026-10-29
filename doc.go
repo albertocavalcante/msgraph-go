@@ -13,4 +13,7 @@
 //
 // Requests to hosts other than the base URL's are refused with
 // [ErrUntrustedHost], because every request carries a bearer token.
+// [WithAllowedHosts] permits additional direct destinations. Redirects remain
+// confined to the initial request's origin, are refused for unsafe methods,
+// and wrap [ErrRedirectRefused] on policy failure.
 package msgraph
