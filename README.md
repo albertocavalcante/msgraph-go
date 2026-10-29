@@ -76,6 +76,31 @@ and are combined with the typed forms.
   `@odata.nextLink`, a caller-supplied link — would hand that token to a third
   party. Those requests fail with `ErrUntrustedHost`; `WithAllowedHosts` opts
   specific hosts in. Scheme downgrades are rejected on the same grounds.
+- Destinations are validated before the token source is called. URL user info,
+  fragments, malformed authorities and invalid base URLs are rejected. Origins
+  compare scheme, case-insensitive hostname and effective numeric port; omitted
+  HTTP/HTTPS ports are equivalent to explicit `80`/`443`.
+- **Redirects must stay on the initial request's origin.** `WithAllowedHosts`
+  permits direct requests only, and does not authorize a redirect to another
+  allowed host. `WithHTTPClient` copies client configuration and wraps its
+  redirect callback: the callback can further restrict behavior, but cannot
+  change the destination or method to bypass these checks. The standard
+  ten-request redirect limit applies when no callback is supplied; a supplied
+  callback retains its own redirect-count policy and `http.ErrUseLastResponse`
+  behavior.
+- Redirects are refused for mutating methods, including method-preserving
+  `307`/`308` responses and `301`/`302`/`303` responses that would rewrite a
+  mutation to `GET`. The initial request may already have changed the server;
+  a refused redirect does not prove that no side effect occurred. Redirect
+  refusals wrap `ErrRedirectRefused` and are never retried, even when
+  `WithRetryUnsafeMethods(true)` is set. Other retry rules are unchanged.
+  A malformed `Location` can fail inside `net/http` before the redirect
+  callback runs; that remains a transport error under the existing retry
+  rules. Enabling unsafe retries therefore still permits replay after such
+  an uncertain failure. Unsafe retries remain disabled by default.
+- HTTP transport error strings omit request URLs, cursor queries and callback
+  text. `errors.Is`/`errors.As` retain access to the original cause; explicitly
+  inspecting or logging that cause may reveal its URL.
 - Retries are enabled for safe methods (`GET`, `HEAD`, `OPTIONS`) on throttling
   and transient server errors. Mutating methods are not retried unless
   `WithRetryUnsafeMethods(true)` is set explicitly.

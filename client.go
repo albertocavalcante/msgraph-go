@@ -42,6 +42,11 @@ var errNilTokenSource = errors.New("msgraph: nil token source")
 // behavior; use [WithAllowedHosts] to opt specific hosts in.
 var ErrUntrustedHost = errors.New("msgraph: untrusted request host")
 
+// ErrRedirectRefused is returned when a redirect violates the destination or
+// method policy, exceeds the redirect limit, or is rejected by the caller's
+// redirect callback. A refused redirect is never retried.
+var ErrRedirectRefused = errors.New("msgraph: redirect refused")
+
 // ErrResponseTooLarge is returned when a response body exceeds the configured
 // limit. Streaming into an io.Writer is not subject to it: a caller that asks
 // to stream has taken responsibility for the size.
@@ -70,14 +75,16 @@ func WithBaseURL(value string) Option {
 	return func(c *Client) error {
 		parsed, err := url.Parse(value)
 		if err != nil {
-			return fmt.Errorf("parse base url: %w", err)
+			return errors.New("msgraph: invalid base URL")
 		}
 		c.baseURL = parsed
 		return nil
 	}
 }
 
-// WithHTTPClient sets the HTTP client. A nil client is ignored.
+// WithHTTPClient sets the HTTP client. A nil client is ignored. Its
+// configuration is copied; the original client's CheckRedirect is not changed.
+// Redirect callbacks may further restrict the client's same-origin policy.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) error {
 		if client != nil {
@@ -132,6 +139,8 @@ func WithRetryUnsafeMethods(value bool) Option {
 // [WithBaseURL] host is always allowed. Use this only for hosts that should
 // legitimately receive the client's bearer token, such as a sovereign-cloud
 // Graph endpoint the caller also talks to directly. Empty values are ignored.
+// This permits direct requests only: redirects must remain on the origin of
+// the initial request, even when another host is allowed here.
 func WithAllowedHosts(hosts ...string) Option {
 	return func(c *Client) error {
 		for _, host := range hosts {
@@ -199,6 +208,10 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	if !validHTTPURL(c.baseURL) || c.baseURL.RawQuery != "" || c.baseURL.ForceQuery {
+		return nil, errors.New("msgraph: invalid base URL")
+	}
+	c.httpClient = c.redirectClient(c.httpClient)
 	return c, nil
 }
 
@@ -294,8 +307,8 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 		}
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
-			if attempt >= c.maxRetries || !canRetry {
-				return nil, err
+			if errors.Is(err, ErrRedirectRefused) || attempt >= c.maxRetries || !canRetry {
+				return nil, &requestFailure{cause: err}
 			}
 			if err := c.sleep(ctx, retryDelay(nil, attempt, c.maxDelay)); err != nil {
 				return nil, err
@@ -338,10 +351,6 @@ func (c *Client) newHTTPRequest(
 	if err := req.Params.Validate(); err != nil {
 		return nil, err
 	}
-	token, err := c.token.Token(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("token: %w", err)
-	}
 	u, err := c.resolveURL(req.URL)
 	if err != nil {
 		return nil, err
@@ -373,7 +382,15 @@ func (c *Client) newHTTPRequest(
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
 	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
+		return nil, errors.New("msgraph: invalid HTTP request")
+	}
+	// A private per-request binding survives redirects without relying on the
+	// mutable request history exposed to a caller's CheckRedirect callback.
+	binding := &requestOrigin{origin: url.URL{Scheme: u.Scheme, Host: u.Host}, method: method}
+	httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), requestOriginKey{}, binding))
+	token, err := c.token.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("token: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Accept", "application/json")
@@ -407,13 +424,22 @@ func (c *Client) resolveURL(value string) (*url.URL, error) {
 	}
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return nil, fmt.Errorf("parse request url: %w", err)
+		return nil, errors.New("msgraph: invalid request URL")
 	}
 	if parsed.IsAbs() {
+		if !validHTTPURL(parsed) {
+			return nil, errors.New("msgraph: invalid request URL")
+		}
 		if !c.hostAllowed(parsed) {
-			return nil, fmt.Errorf("%w: %s://%s", ErrUntrustedHost, parsed.Scheme, parsed.Host)
+			return nil, ErrUntrustedHost
 		}
 		return parsed, nil
+	}
+	if parsed.Host != "" {
+		return nil, ErrUntrustedHost
+	}
+	if parsed.User != nil || parsed.Fragment != "" || parsed.Opaque != "" {
+		return nil, errors.New("msgraph: invalid request URL")
 	}
 	base := *c.baseURL
 	basePath := strings.TrimRight(base.Path, "/")
@@ -435,11 +461,15 @@ func (c *Client) hostAllowed(u *url.URL) bool {
 	if !strings.EqualFold(u.Scheme, c.baseURL.Scheme) {
 		return false
 	}
-	if strings.EqualFold(u.Host, c.baseURL.Host) {
+	if sameOrigin(u, c.baseURL) {
 		return true
 	}
-	_, ok := c.allowedHosts[strings.ToLower(u.Host)]
-	return ok
+	for host := range c.allowedHosts {
+		if sameOrigin(u, &url.URL{Scheme: c.baseURL.Scheme, Host: host}) {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeBody(req Request) (body []byte, contentType string, err error) {

@@ -142,13 +142,16 @@ func FailedBatchResponses(responses []BatchResponse) []BatchResponse {
 func (c *Client) normalizeBatchURL(value string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return "", err
+		return "", errors.New("msgraph: invalid batch request URL")
 	}
 	if !parsed.IsAbs() {
+		if parsed.Host != "" || parsed.Fragment != "" || parsed.User != nil || parsed.Opaque != "" {
+			return "", errors.New("msgraph: invalid batch request URL")
+		}
 		return value, nil
 	}
 	if !sameOrigin(parsed, c.baseURL) {
-		return "", fmt.Errorf("absolute URL origin %q does not match Graph base origin %q", parsed.Scheme+"://"+parsed.Host, c.baseURL.Scheme+"://"+c.baseURL.Host)
+		return "", ErrUntrustedHost
 	}
 	relative := stripBasePath(parsed.EscapedPath(), c.baseURL.EscapedPath())
 	if parsed.RawQuery != "" {
@@ -158,10 +161,6 @@ func (c *Client) normalizeBatchURL(value string) (string, error) {
 		return "", errBatchMissingURL
 	}
 	return relative, nil
-}
-
-func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
 func stripBasePath(pathValue, basePath string) string {

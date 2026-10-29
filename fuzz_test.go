@@ -93,7 +93,8 @@ func FuzzFilterValueCannotEscape(f *testing.F) {
 	})
 }
 
-// The bearer token must never be sent to a host other than the base host.
+// The bearer token must never leave the base origin. Explicit default ports
+// are equivalent to an omitted port; other ports remain forbidden.
 // resolveURL is the only thing standing between a hostile link and the token,
 // so it gets arbitrary input.
 func FuzzResolveURLNeverLeavesBaseHost(f *testing.F) {
@@ -105,6 +106,11 @@ func FuzzResolveURLNeverLeavesBaseHost(f *testing.F) {
 		"http://graph.microsoft.com/v1.0",
 		"https://graph.microsoft.com@evil.example/x",
 		"https://graph.microsoft.com:443/v1.0/me",
+		"https://graph.microsoft.com:00443/v1.0/me",
+		"https://graph.microsoft.com:444/v1.0/me",
+		"https://graph.microsoft.com:65536/v1.0/me",
+		"https://user:private@graph.microsoft.com/v1.0/me",
+		"https://graph.microsoft.com/v1.0/me#fragment",
 		"", ":", "///", "\\\\evil.example\\x", "https://GRAPH.microsoft.com/v1.0/me",
 	} {
 		f.Add(seed)
@@ -120,8 +126,14 @@ func FuzzResolveURLNeverLeavesBaseHost(f *testing.F) {
 		if err != nil {
 			return // Refusing is always an acceptable outcome.
 		}
-		if !strings.EqualFold(resolved.Host, "graph.microsoft.com") {
+		if !strings.EqualFold(resolved.Hostname(), "graph.microsoft.com") {
 			t.Fatalf("resolveURL(%q) = %q, which would send the token to %q", raw, resolved, resolved.Host)
+		}
+		if port := resolved.Port(); port != "" && strings.TrimLeft(port, "0") != "443" {
+			t.Fatalf("resolveURL(%q) = %q, which would send the token to nondefault port %q", raw, resolved, port)
+		}
+		if resolved.User != nil || resolved.Fragment != "" || resolved.Opaque != "" {
+			t.Fatalf("resolveURL(%q) accepted credentials, fragment or opaque syntax", raw)
 		}
 		if !strings.EqualFold(resolved.Scheme, "https") {
 			t.Fatalf("resolveURL(%q) = %q, downgraded to scheme %q", raw, resolved, resolved.Scheme)
