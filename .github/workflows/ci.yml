@@ -4,6 +4,7 @@ name: CI
 # Push checks validate each trusted branch head and remain visible on its PR.
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
 
 permissions:
