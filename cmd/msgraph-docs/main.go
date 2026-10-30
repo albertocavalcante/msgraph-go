@@ -361,7 +361,7 @@ func execute(ctx context.Context, c command, graph *msgraph.Client, username str
 func graphError(err error) error {
 	var api *msgraph.APIError
 	if errors.As(err, &api) {
-		return &safeFailure{message: fmt.Sprintf("microsoft Graph request failed: status %d, code %s", api.StatusCode, api.Code), cause: err}
+		return &safeFailure{message: fmt.Sprintf("microsoft graph request failed: status %d, code %s", api.StatusCode, api.Code), cause: err}
 	}
 	return err
 }
