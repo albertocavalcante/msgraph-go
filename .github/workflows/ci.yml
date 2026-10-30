@@ -48,24 +48,15 @@ jobs:
           go mod download -modfile=ci-tools/go.mod
           go mod verify
           go mod verify -modfile=ci-tools/go.mod
-          cd cmd/msgraph-docs
-          go mod download
-          go mod verify
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: |
           go vet ./...
-          cd cmd/msgraph-docs
-          go vet ./...
       - name: Test
         run: |
           go tool -modfile=ci-tools/go.mod gotestsum --format pkgname-and-test-fails -- -race ./...
-          cd cmd/msgraph-docs
-          go test -race ./...
           go build ./...
       - name: Lint
         run: |
           go tool -modfile=ci-tools/go.mod golangci-lint run --timeout=5m
-          cd cmd/msgraph-docs
-          go tool -modfile=../../ci-tools/go.mod golangci-lint run --config ../../.golangci.toml --timeout=5m

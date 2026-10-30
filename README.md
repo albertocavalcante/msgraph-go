@@ -161,7 +161,5 @@ redirects and unsolicited partial responses are refused. Downloads obey
 signed URLs, and never retry a partially streamed response. Stage file output
 and publish it only after success.
 
-The optional [document CLI](cmd/msgraph-docs) adds account-bound OneDrive
-listing/search, new-file upload plans, downloads and Microsoft PDF conversion.
-It is a separate module, so `msauth-go` is not a consumer dependency. Run
-`just docs-ci` in addition to `just ci` when changing that CLI.
+The production CLI is developed separately in `msgraph-cli`; applications can
+use this SDK without depending on its authentication or command-line code.

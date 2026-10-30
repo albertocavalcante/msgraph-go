@@ -51,10 +51,3 @@ mutate *ARGS:
 # off-by-one bugs hide.
 mutate-bounds:
     go tool -modfile=tools.go.mod mutante run --operators cond_boundary
-
-# Optional document CLI lives in its own module to keep auth out of consumers.
-docs-ci:
-    cd cmd/msgraph-docs && go vet ./...
-    cd cmd/msgraph-docs && go test -race ./...
-    cd cmd/msgraph-docs && go build ./...
-    cd cmd/msgraph-docs && go tool -modfile=../../ci-tools/go.mod golangci-lint run --config ../../.golangci.toml --timeout=5m
