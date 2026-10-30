@@ -63,3 +63,12 @@ References: [Graph downloads](https://learn.microsoft.com/en-us/graph/api/drivei
 [uploads](https://learn.microsoft.com/en-us/graph/api/driveitem-put-content),
 [conflict behavior](https://learn.microsoft.com/en-us/graph/api/resources/driveitem),
 [Word add-ins](https://learn.microsoft.com/en-us/office/dev/add-ins/word/word-add-ins-programming-overview).
+
+Document credentials are saved under the separate `msgraph-docs-msauth`
+keychain service. Existing Outlook login data is a read-only fallback; this
+CLI never writes to Outlook's shared cache. Staged interactive sign-in also
+checks for cache drift before publication and discards the candidate on drift.
+The underlying Store interface has no compare-and-swap operation, so two
+simultaneous document-CLI writers still have a narrow check/save race; serialize
+interactive sign-ins for the same document cache. This does not expose Outlook's
+shared cache to that race.

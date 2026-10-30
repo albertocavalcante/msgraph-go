@@ -242,7 +242,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
-	store := cache.NewKeychainStore()
+	store := &isolatedStore{
+		primary: cache.NewKeychainStoreWithService("msgraph-docs-msauth"),
+		seed:    cache.NewKeychainStore(),
+	}
 	cfg := msauth.Config{Scopes: []string{scope}, Account: c.profile.Account, ClientID: c.profile.ClientID, Authority: c.profile.Authority}
 	if c.action == "login" {
 		username, err := loginSafely(ctx, c.profile.Account, store, func(ctx context.Context, staged cache.Store) (string, error) {

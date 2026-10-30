@@ -204,3 +204,43 @@ func TestAccountDiscoveryBindsWithExclusiveExactReference(t *testing.T) {
 		t.Fatal("caller discovery configuration mutated")
 	}
 }
+
+func TestLoginRefusesConcurrentCredentialChanges(t *testing.T) {
+	base := &memoryStore{data: map[string][]byte{"cache": []byte("original")}}
+	_, err := loginSafely(t.Context(), "owner@example.test", base, func(ctx context.Context, staged cache.Store) (string, error) {
+		if _, err := staged.Load(ctx, "cache"); err != nil {
+			return "", err
+		}
+		if err := staged.Save(ctx, "cache", []byte("staged-login")); err != nil {
+			return "", err
+		}
+		base.data["cache"] = []byte("concurrent-refresh")
+		return "owner@example.test", nil
+	})
+	if err == nil || base.saves != 0 || string(base.data["cache"]) != "concurrent-refresh" {
+		t.Fatal("concurrent cache update was overwritten")
+	}
+}
+
+func TestDocumentCredentialsNeverWriteTheSharedSeed(t *testing.T) {
+	primary := &memoryStore{data: map[string][]byte{}}
+	seed := &memoryStore{data: map[string][]byte{"cache": []byte("shared-original")}}
+	store := &isolatedStore{primary: primary, seed: seed}
+	data, err := store.Load(t.Context(), "cache")
+	if err != nil || string(data) != "shared-original" {
+		t.Fatal("existing login fallback unavailable")
+	}
+	if err := store.Save(t.Context(), "cache", []byte("document-only")); err != nil {
+		t.Fatal(err)
+	}
+	if seed.saves != 0 || string(seed.data["cache"]) != "shared-original" {
+		t.Fatal("shared Outlook credentials changed")
+	}
+	if err := store.Delete(t.Context(), "cache"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = store.Load(t.Context(), "cache")
+	if err != nil || data != nil {
+		t.Fatal("deleted document cache fell back to shared credentials")
+	}
+}
