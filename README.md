@@ -142,3 +142,24 @@ go run .
 go run . -show-messages # opt in to printing sender/subject metadata
 go run . # second run should reuse the msauth-go token cache silently
 ```
+
+### Document downloads and conversion
+
+`Download` is the explicit file-content path for Graph's preauthenticated
+redirect protocol. It keeps ordinary `Do`/`Get` destination rules unchanged:
+
+```go
+_, err := client.Download(ctx, "/me/drive/items/ITEM_ID/content", msgraph.Params{
+    Custom: url.Values{"format": {"pdf"}},
+}, output)
+```
+
+The initial Graph GET may redirect once to an HTTPS content URL. The separate
+content request carries no bearer token, cookies, or Referer; subsequent
+redirects and unsolicited partial responses are refused. Downloads obey
+`WithMaxResponseBytes`, preserve inspectable error causes without printing
+signed URLs, and never retry a partially streamed response. Stage file output
+and publish it only after success.
+
+The production CLI is developed separately in `msgraph-cli`; applications can
+use this SDK without depending on its authentication or command-line code.
