@@ -192,3 +192,15 @@ func (s *memoryStore) Save(_ context.Context, key string, data []byte) error {
 	return nil
 }
 func (s *memoryStore) Delete(_ context.Context, key string) error { delete(s.data, key); return nil }
+
+func TestAccountDiscoveryBindsWithExclusiveExactReference(t *testing.T) {
+	ref := msauth.AccountRef{HomeAccountID: "home-example", Environment: "login.microsoftonline.com", TenantID: "9188040d-6c67-4c5b-b112-36a304b66dad", LocalAccountID: "local-example"}
+	cfg := msauth.Config{Account: "owner@example.test", Scopes: []string{"Files.Read"}}
+	_, err := boundAuthenticator(cfg, &memoryStore{data: map[string][]byte{}}, ref)
+	if err != nil {
+		t.Fatalf("pinned SDK rejected discovery-to-bound transition: %v", err)
+	}
+	if cfg.Account != "owner@example.test" {
+		t.Fatal("caller discovery configuration mutated")
+	}
+}

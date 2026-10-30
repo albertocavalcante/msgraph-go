@@ -276,7 +276,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return authenticationError(err, scope)
 	}
-	auth, err = msauth.NewForAccount(cfg, store, account.Ref)
+	auth, err = boundAuthenticator(cfg, store, account.Ref)
 	if err != nil {
 		return authenticationError(err, scope)
 	}

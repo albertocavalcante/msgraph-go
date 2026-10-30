@@ -77,6 +77,13 @@ type safeFailure struct {
 	cause   error
 }
 
+func boundAuthenticator(cfg msauth.Config, store cache.Store, ref msauth.AccountRef) (*msauth.Authenticator, error) {
+	// Discovery uses the username; the pinned SDK requires an exclusive exact
+	// account reference once discovery is complete.
+	cfg.Account = ""
+	return msauth.NewForAccount(cfg, store, ref)
+}
+
 func (e *safeFailure) Error() string { return e.message }
 func (e *safeFailure) Unwrap() error { return e.cause }
 
