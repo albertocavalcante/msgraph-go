@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Download streams a Graph file or format-conversion response into out.
@@ -23,6 +25,16 @@ import (
 // only after success. Graph throttling is retried before streaming; content
 // requests and partial streams are never retried.
 func (c *Client) Download(ctx context.Context, path string, params Params, out io.Writer) (*Response, error) {
+	ctx, span := startSpan(ctx, spanDownload)
+	if span.IsRecording() {
+		span.SetAttributes(attrMethod.String(http.MethodGet))
+	}
+	resp, err := c.download(ctx, span, path, params, out)
+	endCall(span, resp, err)
+	return resp, err
+}
+
+func (c *Client) download(ctx context.Context, call trace.Span, path string, params Params, out io.Writer) (*Response, error) {
 	if out == nil {
 		return nil, errors.New("msgraph: nil download writer")
 	}
@@ -37,17 +49,21 @@ func (c *Client) Download(ctx context.Context, path string, params Params, out i
 		if err != nil {
 			return nil, err
 		}
-		resp, err = client.Do(req)
+		if attempt == 0 && call.IsRecording() {
+			call.SetAttributes(attrURLTemplate.String(routeTemplate(req.URL.EscapedPath())))
+		}
+		resp, err = roundTrip(&client, req, attempt, true)
 		if err != nil {
 			return nil, &requestFailure{cause: err}
 		}
 		if !retryableStatus(resp.StatusCode) || attempt >= c.maxRetries {
 			break
 		}
-		delay := retryDelay(resp.Header, attempt, c.maxDelay)
+		wait := planRetry(resp.Header, attempt, c.maxDelay)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
 		_ = resp.Body.Close()
-		if err := c.sleep(ctx, delay); err != nil {
+		c.noteRetry(ctx, call, req, attempt+1, resp.StatusCode, wait)
+		if err := c.sleep(ctx, wait.delay); err != nil {
 			return nil, err
 		}
 	}
@@ -55,6 +71,7 @@ func (c *Client) Download(ctx context.Context, path string, params Params, out i
 		return c.downloadBody(resp, out, true)
 	}
 	target, err := resp.Location()
+	drainSmallBody(resp)
 	_ = resp.Body.Close()
 	if err != nil || !validHTTPURL(target) || !strings.EqualFold(target.Scheme, "https") {
 		return nil, &redirectFailure{cause: ErrUntrustedHost}
@@ -65,7 +82,7 @@ func (c *Client) Download(ctx context.Context, path string, params Params, out i
 	}
 	// Deliberately do not copy Graph headers, the caller's cookie jar, or a
 	// Referer containing the signed URL to this independent request.
-	resp, err = client.Do(req)
+	resp, err = roundTrip(&client, req, 0, false)
 	if err != nil {
 		return nil, &requestFailure{cause: err}
 	}

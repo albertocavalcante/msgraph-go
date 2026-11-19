@@ -107,10 +107,22 @@ func Delta[T any](
 	params Params,
 	opts ...PageOption,
 ) (items []T, deltaLink string, err error) {
+	ctx, span := startSpan(ctx, spanDelta)
+	pages := 0
+	defer func() {
+		if span.IsRecording() {
+			if u, resolveErr := client.resolveURL(path); resolveErr == nil {
+				span.SetAttributes(attrURLTemplate.String(routeTemplate(u.EscapedPath())))
+			}
+			span.SetAttributes(attrDeltaPages.Int(pages), attrDeltaItems.Int(len(items)))
+		}
+		endCall(span, nil, err)
+	}()
 	for page, pageErr := range Pages[T](ctx, client, path, params, opts...) {
 		if pageErr != nil {
 			return items, deltaLink, pageErr
 		}
+		pages++
 		items = append(items, page.Value...)
 		if page.DeltaLink != "" {
 			deltaLink = page.DeltaLink

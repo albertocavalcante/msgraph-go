@@ -1,9 +1,12 @@
 # msgraph-go
 
-`msgraph-go` is a small, dependency-free Microsoft Graph REST client for Go.
-It owns transport concerns that every typed Microsoft SDK in this workspace
-needs: bearer-token injection, OData query construction, JSON request/response
-handling, paging, delta sync, throttling retries, and structured Graph errors.
+`msgraph-go` is a small Microsoft Graph REST client for Go. Its only direct
+dependencies are the OpenTelemetry API modules, `go.opentelemetry.io/otel`
+and `go.opentelemetry.io/otel/trace`; it never imports the SDK or an
+exporter. It owns transport concerns that every typed Microsoft SDK in this
+workspace needs: bearer-token injection, OData query construction, JSON
+request/response handling, paging, delta sync, throttling retries, and
+structured Graph errors.
 
 It deliberately does not import `msauth-go`. Callers provide a `TokenSource`,
 so CLIs can wire Microsoft delegated auth while tests and services can provide
@@ -123,10 +126,26 @@ and are combined with the typed forms.
   traversal. `Page[T]` also exposes `@odata.count` and `@odata.deltaLink`.
 - `Delta` drains a delta query and returns the changed items plus the
   `deltaLink` to persist as the sync position.
+- Clients built without `WithHTTPClient` share one transport, so they reuse
+  each other's connections. A body the caller does not decode is read first
+  when its declared length is at most 64 KiB, so its connection returns to
+  the pool; anything else is closed unread.
 - `SuggestDelegatedScopes` provides conservative delegated-scope hints for
   common raw Graph routes.
 - `TranslateExchangeIDs` wraps `/me/translateExchangeIds` and
   `/users/{id}/translateExchangeIds` for Exchange/REST/immutable ID conversion.
+
+### Tracing and logging
+
+Pass a context carrying an OpenTelemetry span and the client records a span per
+call, a client span per HTTP attempt with connection reuse and DNS, connect,
+TLS and first-byte timings, a span per token acquisition, and an event per
+retry wait. There is nothing to configure, and an untraced context costs close
+to nothing. `WithLogger(*slog.Logger)` adds debug lines for retry decisions.
+Routes are redacted to fixed Graph segments, such as
+`/v1.0/me/mailFolders/{id}/messages`, and no token, header, body or query
+string is recorded. Span names and attributes are listed in
+[docs/observability.md](docs/observability.md).
 
 ## Develop
 

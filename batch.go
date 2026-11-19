@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // MaxBatchRequests is the most subrequests Graph accepts in one JSON batch.
@@ -65,36 +67,54 @@ type batchResult struct {
 
 // Batch sends a Microsoft Graph JSON batch request.
 func (c *Client) Batch(ctx context.Context, requests []BatchRequest) ([]BatchResponse, error) {
+	ctx, span := startSpan(ctx, spanBatch)
+	if span.IsRecording() {
+		span.SetAttributes(attrBatchSize.Int(len(requests)))
+	}
+	responses, resp, err := c.batch(ctx, span, requests)
+	if err == nil && span.IsRecording() {
+		span.SetAttributes(attrBatchFailed.Int(len(FailedBatchResponses(responses))))
+	}
+	endCall(span, resp, err)
+	return responses, err
+}
+
+func (c *Client) batch(ctx context.Context, call trace.Span, requests []BatchRequest) ([]BatchResponse, *Response, error) {
 	if len(requests) == 0 {
-		return nil, errEmptyBatch
+		return nil, nil, errEmptyBatch
 	}
 	if len(requests) > maxBatchRequests {
-		return nil, errBatchTooLarge
+		return nil, nil, errBatchTooLarge
 	}
 	normalized := make([]BatchRequest, len(requests))
 	for i, req := range requests {
 		if req.ID == "" {
-			return nil, fmt.Errorf("%w at index %d", errBatchMissingID, i)
+			return nil, nil, fmt.Errorf("%w at index %d", errBatchMissingID, i)
 		}
 		if req.Method == "" {
-			return nil, fmt.Errorf("%w at index %d", errBatchMissingVerb, i)
+			return nil, nil, fmt.Errorf("%w at index %d", errBatchMissingVerb, i)
 		}
 		if req.URL == "" {
-			return nil, fmt.Errorf("%w at index %d", errBatchMissingURL, i)
+			return nil, nil, fmt.Errorf("%w at index %d", errBatchMissingURL, i)
 		}
 		batchURL, err := c.normalizeBatchURL(req.URL)
 		if err != nil {
-			return nil, fmt.Errorf("batch request %q url: %w", req.ID, err)
+			return nil, nil, fmt.Errorf("batch request %q url: %w", req.ID, err)
 		}
 		req.URL = batchURL
 		normalized[i] = req
 	}
 
 	var result batchResult
-	if _, err := c.Post(ctx, "/$batch", Params{}, batchEnvelope{Requests: normalized}, &result); err != nil {
-		return nil, err
+	resp, err := c.do(ctx, call, Request{
+		Method: http.MethodPost,
+		URL:    "/$batch",
+		Body:   batchEnvelope{Requests: normalized},
+	}, &result)
+	if err != nil {
+		return nil, resp, err
 	}
-	return result.Responses, nil
+	return result.Responses, resp, nil
 }
 
 // BatchStrict sends a JSON batch and returns a [BatchError] when any
