@@ -1,6 +1,9 @@
 package msgraph
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const (
 	// routePlaceholder stands in for every path segment that is not a known
@@ -12,8 +15,10 @@ const (
 	routeTruncated   = "..."
 )
 
-// routeTemplate turns an escaped request path into a low-cardinality route
-// for telemetry, such as "/v1.0/me/mailFolders/{id}/messages/{id}".
+// routeTemplate turns an escaped request path, as url.URL.EscapedPath
+// returns it, into a low-cardinality route for telemetry, such as
+// "/v1.0/me/mailFolders/{id}/messages/{id}". Each segment is percent-decoded
+// before matching, and one that does not decode is an {id}.
 //
 // The rule is an allowlist, so that anything unrecognized is redacted rather
 // than leaked. A segment survives only when it case-insensitively matches a
@@ -47,23 +52,26 @@ func routeTemplate(escapedPath string) string {
 	}
 	var children map[string]string // non-nil right after a collection
 	inAddress := false
-	for segment := range strings.SplitSeq(escapedPath, "/") {
-		switch {
-		case segment == "":
-			continue
-		case inAddress:
-			inAddress = !strings.HasSuffix(segment, ":")
-			continue
-		case strings.HasSuffix(segment, ":"):
-			inAddress = true
-			children = nil
-			if !emit(routePlaceholder) {
-				return b.String()
-			}
+	// Split before decoding, so an encoded slash stays inside its segment.
+	// Decoding is safe because only canonical allowlisted strings are emitted.
+	for raw := range strings.SplitSeq(escapedPath, "/") {
+		if raw == "" {
 			continue
 		}
+		segment, err := url.PathUnescape(raw)
 		var out string
-		out, children = templateSegment(segment, children)
+		switch {
+		case inAddress:
+			inAddress = err != nil || !endsAddress(segment)
+			continue
+		case err != nil:
+			out, children = routePlaceholder, nil
+		case endsAddress(segment):
+			inAddress = true
+			out, children = routePlaceholder, nil
+		default:
+			out, children = templateSegment(segment, children)
+		}
 		if !emit(out) {
 			return b.String()
 		}
@@ -74,7 +82,14 @@ func routeTemplate(escapedPath string) string {
 	return b.String()
 }
 
-// templateSegment renders one segment. allowed is the set of names valid in
+// endsAddress reports whether a decoded segment ends path-based addressing
+// with ":". A colon still encoded after one decoding counts too, so a
+// double-encoded path is over-redacted rather than read segment by segment.
+func endsAddress(segment string) bool {
+	return strings.HasSuffix(segment, ":") || strings.HasSuffix(strings.ToLower(segment), "%3a")
+}
+
+// templateSegment renders one decoded segment. allowed is the set of names valid in
 // this position: a collection's children, or nil for the general set. It
 // returns the children for the next position.
 func templateSegment(segment string, allowed map[string]string) (out string, next map[string]string) {
