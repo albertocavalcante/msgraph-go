@@ -606,3 +606,26 @@ func TestUnreadBodyIsNotDrainedUnlessSmall(t *testing.T) {
 		})
 	}
 }
+
+// untracedGetAllocs is what an untraced Get with an empty response costs on
+// go1.26.2, transport included. Exceeding it means instrumentation work has
+// leaked into the path that should be close to free.
+const untracedGetAllocs = 32
+
+func TestUntracedGetAllocationBudget(t *testing.T) {
+	client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := client.Get(ctx, "/me/messages/AAMk", Params{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > untracedGetAllocs {
+		t.Fatalf("untraced Get allocates %v times, budget %d", allocs, untracedGetAllocs)
+	}
+}

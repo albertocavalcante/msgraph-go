@@ -175,11 +175,11 @@ func (c *Client) acquireToken(ctx context.Context) (string, error) {
 // Instrumentation travels in the request context, so a caller's transport is
 // used unchanged and sees the attempt span as its parent.
 func roundTrip(client *http.Client, req *http.Request, attempt int, graph bool) (*http.Response, error) {
-	ctx, span := startSpan(req.Context(), req.Method, trace.WithSpanKind(trace.SpanKindClient))
-	if !span.IsRecording() {
-		span.End()
+	// The call span is the parent; when it is not recording, neither is this.
+	if !trace.SpanFromContext(req.Context()).IsRecording() {
 		return client.Do(req)
 	}
+	ctx, span := startSpan(req.Context(), req.Method, trace.WithSpanKind(trace.SpanKindClient))
 	span.SetAttributes(attrMethod.String(req.Method))
 	if graph {
 		// "{method} {url.template}", per the HTTP client span convention.
