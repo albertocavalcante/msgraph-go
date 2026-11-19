@@ -257,6 +257,9 @@ func newDefaultTransport() *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// Graph is one host, so this is effectively the pool size; Go's
+		// default of 2 churns connections under concurrent HTTP/1.1 use.
+		MaxIdleConnsPerHost: 16,
 	}
 }
 

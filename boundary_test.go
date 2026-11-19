@@ -368,6 +368,10 @@ func TestDefaultHTTPClientHasTimeouts(t *testing.T) {
 	if transport.MaxIdleConns <= 0 {
 		t.Errorf("MaxIdleConns = %d, want positive", transport.MaxIdleConns)
 	}
+	// Zero means http.DefaultMaxIdleConnsPerHost, which is 2.
+	if transport.MaxIdleConnsPerHost < 16 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want at least 16 for concurrent use of one host", transport.MaxIdleConnsPerHost)
+	}
 	if !transport.ForceAttemptHTTP2 {
 		t.Error("ForceAttemptHTTP2 = false, want HTTP/2 attempted")
 	}
