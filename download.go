@@ -71,7 +71,7 @@ func (c *Client) download(ctx context.Context, call trace.Span, path string, par
 		return c.downloadBody(resp, out, true)
 	}
 	target, err := resp.Location()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+	drainSmallBody(resp)
 	_ = resp.Body.Close()
 	if err != nil || !validHTTPURL(target) || !strings.EqualFold(target.Scheme, "https") {
 		return nil, &redirectFailure{cause: ErrUntrustedHost}

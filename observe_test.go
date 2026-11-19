@@ -549,3 +549,60 @@ func hostPort(t *testing.T, raw string) (string, int64) {
 	}
 	return u.Hostname(), int64(port)
 }
+
+// stallingBody stands for a response whose bytes stop arriving: any read
+// would block, so the client must not read it.
+type stallingBody struct {
+	t      *testing.T
+	closed bool
+}
+
+func (b *stallingBody) Read([]byte) (int, error) {
+	b.t.Error("read a body that may never finish")
+	return 0, io.EOF
+}
+
+func (b *stallingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+// Draining an unread body only pays off when it is small and its length is
+// known; an unannounced or large body is closed without being read.
+func TestUnreadBodyIsNotDrainedUnlessSmall(t *testing.T) {
+	for _, length := range []int64{-1, maxDrainBytes + 1} {
+		t.Run("get", func(t *testing.T) {
+			body := &stallingBody{t: t}
+			client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, ContentLength: length, Body: body}, nil
+			})}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Get(context.Background(), "/me", Params{}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !body.closed {
+				t.Error("body was not closed")
+			}
+		})
+		t.Run("download redirect", func(t *testing.T) {
+			body := &stallingBody{t: t}
+			client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host == "graph.microsoft.com" {
+					return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://files.example/f"}}, ContentLength: length, Body: body}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data"))}, nil
+			})}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Download(context.Background(), "/me/drive/items/ITEM/content", Params{}, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			if !body.closed {
+				t.Error("redirect body was not closed")
+			}
+		})
+	}
+}

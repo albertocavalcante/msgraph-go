@@ -124,8 +124,9 @@ and are combined with the typed forms.
 - `Delta` drains a delta query and returns the changed items plus the
   `deltaLink` to persist as the sync position.
 - Clients built without `WithHTTPClient` share one transport, so they reuse
-  each other's connections. Bodies a caller does not decode are drained, so
-  their connections return to the pool.
+  each other's connections. A body the caller does not decode is read first
+  when its declared length is at most 64 KiB, so its connection returns to
+  the pool; anything else is closed unread.
 - `SuggestDelegatedScopes` provides conservative delegated-scope hints for
   common raw Graph routes.
 - `TranslateExchangeIDs` wraps `/me/translateExchangeIds` and

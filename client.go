@@ -536,6 +536,21 @@ func encodeBody(req Request) (body []byte, contentType string, err error) {
 	return body, contentType, nil
 }
 
+// maxDrainBytes bounds the unread body the client reads to keep its
+// connection. Reading 64 KiB costs less than a new TCP and TLS handshake; a
+// larger or unannounced body may be slow or endless, and is cheaper to drop.
+const maxDrainBytes = 64 << 10
+
+// drainSmallBody reads a body nobody asked for when its declared length is
+// small, so closing it returns the connection to the pool instead of
+// discarding it. Any other body is left for the caller's Close, so draining
+// never waits on a slow or unbounded body. Read errors do not matter here.
+func drainSmallBody(resp *http.Response) {
+	if resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, resp.ContentLength))
+	}
+}
+
 func (c *Client) decodeResponse(resp *http.Response, out any) (*Response, error) {
 	defer resp.Body.Close()
 	meta := &Response{
@@ -557,9 +572,7 @@ func (c *Client) decodeResponse(resp *http.Response, out any) (*Response, error)
 		return nil, parseAPIError(resp.StatusCode, resp.Header, body)
 	}
 	if out == nil {
-		// Drain what the caller did not ask for, so the connection can be
-		// reused; closing an unread body discards the connection.
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		drainSmallBody(resp)
 		return meta, nil
 	}
 	if writer, ok := out.(io.Writer); ok {
