@@ -41,6 +41,7 @@ const (
 	attrResendCount = attribute.Key("http.request.resend_count")
 	attrServerAddr  = attribute.Key("server.address")
 	attrServerPort  = attribute.Key("server.port")
+	attrProtocol    = attribute.Key("network.protocol.version")
 	attrURLTemplate = attribute.Key("url.template")
 	attrErrorType   = attribute.Key("error.type")
 
@@ -186,11 +187,11 @@ func roundTrip(client *http.Client, req *http.Request, attempt int, graph bool) 
 		route := routeTemplate(req.URL.EscapedPath())
 		span.SetName(req.Method + " " + route)
 		span.SetAttributes(attrURLTemplate.String(route), attrServerAddr.String(req.URL.Hostname()))
+		if port, ok := originPort(req.URL); ok {
+			span.SetAttributes(attrServerPort.Int64(int64(port)))
+		}
 	} else {
 		span.SetAttributes(attrContent.Bool(true))
-	}
-	if port, ok := originPort(req.URL); ok {
-		span.SetAttributes(attrServerPort.Int64(int64(port)))
 	}
 	if attempt > 0 {
 		span.SetAttributes(attrResendCount.Int(attempt))
@@ -204,11 +205,27 @@ func roundTrip(client *http.Client, req *http.Request, attempt int, graph bool) 
 		return nil, err
 	}
 	span.SetAttributes(attrStatus.Int(resp.StatusCode))
+	if version := protocolVersion(resp); version != "" {
+		span.SetAttributes(attrProtocol.String(version))
+	}
 	if resp.StatusCode >= 400 {
 		markError(span, strconv.Itoa(resp.StatusCode))
 	}
 	resp.Body = &spanBody{ReadCloser: resp.Body, span: span}
 	return resp, nil
+}
+
+// protocolVersion renders the response protocol as the semantic conventions
+// spell it ("1.1", "2"), or "" when the transport did not say.
+func protocolVersion(resp *http.Response) string {
+	switch {
+	case resp.ProtoMajor <= 0:
+		return ""
+	case resp.ProtoMajor >= 2 && resp.ProtoMinor == 0:
+		return strconv.Itoa(resp.ProtoMajor)
+	default:
+		return strconv.Itoa(resp.ProtoMajor) + "." + strconv.Itoa(resp.ProtoMinor)
+	}
 }
 
 // spanBody ends the attempt span when the body is closed, so the span covers

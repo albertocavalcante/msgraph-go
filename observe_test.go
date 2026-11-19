@@ -63,6 +63,7 @@ func TestTraceSimpleGet(t *testing.T) {
 	attempt.wantAttr(t, attrURLTemplate, "/v1.0/me/messages/{id}")
 	attempt.wantAttr(t, attrStatus, int64(200))
 	attempt.wantNoAttr(t, attrResendCount)
+	attempt.wantAttr(t, attrProtocol, "1.1")
 	attempt.wantAttr(t, attrConnReused, false)
 	for _, key := range []string{"msgraph.http.connect_ms", "msgraph.http.first_byte_ms"} {
 		if _, ok := attempt.attr(attribute.Key(key)); !ok {
@@ -313,6 +314,7 @@ func TestTraceDownload(t *testing.T) {
 	content := rec.children(rec.children(root)[0])[2]
 	content.wantAttr(t, attrContent, true)
 	content.wantNoAttr(t, attrServerAddr)
+	content.wantNoAttr(t, attrServerPort)
 	content.wantNoAttr(t, attrURLTemplate)
 	if dump := rec.dump(); strings.Contains(dump, "tenant") || strings.Contains(dump, "secret") {
 		t.Fatalf("content URL leaked into telemetry:\n%s", dump)
@@ -627,5 +629,16 @@ func TestUntracedGetAllocationBudget(t *testing.T) {
 	})
 	if allocs > untracedGetAllocs {
 		t.Fatalf("untraced Get allocates %v times, budget %d", allocs, untracedGetAllocs)
+	}
+}
+
+func TestProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		major, minor int
+		want         string
+	}{{0, 0, ""}, {1, 0, "1.0"}, {1, 1, "1.1"}, {2, 0, "2"}, {3, 0, "3"}} {
+		if got := protocolVersion(&http.Response{ProtoMajor: tc.major, ProtoMinor: tc.minor}); got != tc.want {
+			t.Errorf("protocolVersion(%d.%d) = %q, want %q", tc.major, tc.minor, got, tc.want)
+		}
 	}
 }

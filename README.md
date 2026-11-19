@@ -1,9 +1,12 @@
 # msgraph-go
 
-`msgraph-go` is a small Microsoft Graph REST client for Go. Its only
-dependency is the OpenTelemetry trace API. It owns transport concerns that every typed Microsoft SDK in this workspace
-needs: bearer-token injection, OData query construction, JSON request/response
-handling, paging, delta sync, throttling retries, and structured Graph errors.
+`msgraph-go` is a small Microsoft Graph REST client for Go. Its only direct
+dependencies are the OpenTelemetry API modules, `go.opentelemetry.io/otel`
+and `go.opentelemetry.io/otel/trace`; it never imports the SDK or an
+exporter. It owns transport concerns that every typed Microsoft SDK in this
+workspace needs: bearer-token injection, OData query construction, JSON
+request/response handling, paging, delta sync, throttling retries, and
+structured Graph errors.
 
 It deliberately does not import `msauth-go`. Callers provide a `TokenSource`,
 so CLIs can wire Microsoft delegated auth while tests and services can provide

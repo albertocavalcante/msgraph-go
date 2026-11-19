@@ -24,6 +24,10 @@ SDK or an exporter, and uses no global tracer provider. A context holding only
 a remote span context, such as one extracted from incoming headers, carries no
 tracer provider either: start a local span with your provider first.
 
+The client records spans but does not propagate them: no `traceparent` or
+other propagation header is added to outgoing requests. A caller who wants
+that can wrap the transport passed to `WithHTTPClient`.
+
 ## Span tree
 
 ```mermaid
@@ -63,7 +67,8 @@ apply; everything else uses the `msgraph.` prefix.
 | `http.response.status_code` | call, attempt | final status; absent on a transport failure |
 | `error.type` | call, attempt, token | see [Errors](#errors) |
 | `msgraph.error.code` | call | Graph service code such as `ErrorItemNotFound` |
-| `server.address`, `server.port` | attempt | Graph host and port |
+| `server.address`, `server.port` | attempt | Graph host and port; absent on the content request |
+| `network.protocol.version` | attempt | response protocol, `1.1` or `2` |
 | `http.request.resend_count` | attempt, retry event | attempt number; absent on the first attempt |
 | `msgraph.http.connection.reused` | attempt | whether the attempt reused a pooled connection |
 | `msgraph.http.dns_ms` | attempt | DNS lookup, when one happened |
@@ -135,7 +140,7 @@ where Graph expects a navigation rather than an identifier, as in an invalid
 path; the lists are maintained by hand.
 
 The preauthenticated content URL of a `Download` names a tenant host and a
-signed path, so its span records neither.
+signed path, so its span records no host, port or path.
 
 ## Errors
 
