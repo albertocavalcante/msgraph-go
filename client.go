@@ -546,8 +546,10 @@ const maxDrainBytes = 64 << 10
 
 // drainSmallBody reads a body nobody asked for when its declared length is
 // small, so closing it returns the connection to the pool instead of
-// discarding it. Any other body is left for the caller's Close, so draining
-// never waits on a slow or unbounded body. Read errors do not matter here.
+// discarding it. An unannounced or larger body is closed unread. A small body
+// that stalls part way still holds the call until the client's Timeout or the
+// request context ends it; read errors are ignored and never change the
+// result.
 func drainSmallBody(resp *http.Response) {
 	if resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, resp.ContentLength))

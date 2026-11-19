@@ -19,10 +19,14 @@ messages, err := msgraph.Collect[Message](ctx, client, "/me/messages", msgraph.P
 
 With a context that carries no span, the OpenTelemetry API's built-in no-op
 tracer is used, no `httptrace` hooks are installed, and response bodies are not
-wrapped. The module depends only on the OpenTelemetry trace API, never on the
-SDK or an exporter, and uses no global tracer provider. A context holding only
+wrapped. The module depends only on the OpenTelemetry API modules, never on
+the SDK or an exporter, and uses no global tracer provider. A context holding only
 a remote span context, such as one extracted from incoming headers, carries no
 tracer provider either: start a local span with your provider first.
+
+Attempt spans are created only while the call span records, so a sampler
+that drops the internal call spans but would keep client spans sees no
+attempts either.
 
 The client records spans but does not propagate them: no `traceparent` or
 other propagation header is added to outgoing requests. A caller who wants
@@ -180,3 +184,8 @@ A client passed to `WithHTTPClient` is used with its own transport, and
 instrumentation reaches that transport through the request context rather
 than by replacing it. Reuse one such client, or at least one transport, across
 `msgraph.Client` values to keep the pooling.
+
+A body the caller does not decode is read before closing only when its
+declared length is at most 64 KiB. An unknown-length (chunked) or larger
+unread body is closed unread, so its HTTP/1.1 connection is not reused;
+HTTP/2 streams are unaffected.

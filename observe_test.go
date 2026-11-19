@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -573,7 +574,7 @@ func (b *stallingBody) Close() error {
 // known; an unannounced or large body is closed without being read.
 func TestUnreadBodyIsNotDrainedUnlessSmall(t *testing.T) {
 	for _, length := range []int64{-1, maxDrainBytes + 1} {
-		t.Run("get", func(t *testing.T) {
+		t.Run(fmt.Sprintf("get length=%d", length), func(t *testing.T) {
 			body := &stallingBody{t: t}
 			client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, ContentLength: length, Body: body}, nil
@@ -588,7 +589,7 @@ func TestUnreadBodyIsNotDrainedUnlessSmall(t *testing.T) {
 				t.Error("body was not closed")
 			}
 		})
-		t.Run("download redirect", func(t *testing.T) {
+		t.Run(fmt.Sprintf("download redirect length=%d", length), func(t *testing.T) {
 			body := &stallingBody{t: t}
 			client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.Host == "graph.microsoft.com" {
@@ -609,26 +610,31 @@ func TestUnreadBodyIsNotDrainedUnlessSmall(t *testing.T) {
 	}
 }
 
-// untracedGetAllocs is what an untraced Get with an empty response costs on
-// go1.26.2, transport included. Exceeding it means instrumentation work has
-// leaked into the path that should be close to free.
-const untracedGetAllocs = 32
-
-func TestUntracedGetAllocationBudget(t *testing.T) {
-	client, err := New(staticToken("t"), WithHTTPClient(&http.Client{Transport: downloadRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
-	})}))
+// An untraced attempt must cost exactly what the bare HTTP client call costs.
+// Both are measured here, on whatever toolchain runs the test, so the guard
+// is about instrumentation leaking into the untraced path and not about how
+// many allocations net/http happens to make.
+func TestUntracedAttemptAddsNoAllocations(t *testing.T) {
+	client := &http.Client{Transport: downloadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody}, nil
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://graph.microsoft.com/v1.0/me/messages/AAMk", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	allocs := testing.AllocsPerRun(100, func() {
-		if _, err := client.Get(ctx, "/me/messages/AAMk", Params{}, nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if allocs > untracedGetAllocs {
-		t.Fatalf("untraced Get allocates %v times, budget %d", allocs, untracedGetAllocs)
+	measure := func(send func() (*http.Response, error)) float64 {
+		return testing.AllocsPerRun(100, func() {
+			resp, err := send()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+		})
+	}
+	bare := measure(func() (*http.Response, error) { return client.Do(req) })
+	instrumented := measure(func() (*http.Response, error) { return roundTrip(client, req, 0, true) })
+	if instrumented > bare {
+		t.Fatalf("untraced attempt allocates %v times, the bare call %v", instrumented, bare)
 	}
 }
 
