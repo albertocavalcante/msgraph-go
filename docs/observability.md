@@ -101,10 +101,23 @@ resources, so errors are recorded only as a classified `error.type`, and
 `msgraph.error.code` is kept only when it looks like a service code.
 
 `url.template` keeps a path segment only when it is a known fixed Graph
-segment: an API version, a collection, navigation property or action name, a
-well-known folder name such as `inbox`, a `$` system segment such as `$batch`,
-or a `microsoft.graph.*` qualified name. Every other segment becomes `{id}`,
-and consecutive placeholders collapse into one:
+segment in its position, and renders everything else as `{id}`:
+
+- A fixed segment is an API version, a collection, navigation property or
+  action name, a `$` system segment such as `$batch`, or one of a short list
+  of `microsoft.graph.*` casts.
+- The segment right after a collection (`users`, `messages`, `mailFolders`,
+  `events`, `lists`, `items`, ...) holds an identifier or a user-chosen name,
+  so it survives only if it is one of that collection's known children:
+  `delta`, `$count`, `$ref`, a listed cast, and a few per-collection names
+  such as the well-known folders (`inbox`, ...) after `mailFolders` or `root`
+  after `sites` and `items`.
+- Path-based addressing, from a segment ending in `:` through the next one
+  ending in `:` or the end of the path, is a single `{id}`.
+- A call keeps an allowlisted name but not its arguments: `delta()`,
+  `users({id})`.
+- Consecutive placeholders collapse into one, and at most 16 segments are
+  rendered; a longer route ends in `/...`.
 
 | Request path | `url.template` |
 | --- | --- |
@@ -112,12 +125,14 @@ and consecutive placeholders collapse into one:
 | `/v1.0/users/user@example.com/messages` | `/v1.0/users/{id}/messages` |
 | `/v1.0/users('user@example.com')/events` | `/v1.0/users({id})/events` |
 | `/v1.0/me/mailFolders/inbox/messages/delta` | `/v1.0/me/mailFolders/inbox/messages/delta` |
-| `/v1.0/me/drive/root:/Reports/Budget.xlsx:/content` | `/v1.0/me/drive/{id}/content` |
+| `/v1.0/sites/root/lists/Tasks/items` | `/v1.0/sites/root/lists/{id}/items` |
+| `/v1.0/me/drive/root:/Archive/Contacts/Budget.xlsx:/content` | `/v1.0/me/drive/{id}/content` |
 
-The list is an allowlist, so the rule fails toward redaction: a fixed segment
-the list does not know yet shows up as `{id}`. A user-chosen name that happens
-to equal a fixed segment, such as a folder addressed by path and named
-`messages`, is shown.
+The rule fails toward redaction: a fixed segment the lists do not know yet
+shows up as `{id}`. What it cannot rule out is a user-chosen name that equals
+a collection's known child, such as a list titled `delta`, or a name placed
+where Graph expects a navigation rather than an identifier, as in an invalid
+path; the lists are maintained by hand.
 
 The preauthenticated content URL of a `Download` names a tenant host and a
 signed path, so its span records neither.
