@@ -83,3 +83,36 @@ func TestRetryAfterIgnoredWhenStaleOrInvalid(t *testing.T) {
 		}
 	}
 }
+
+// retryDelay is shorthand for the planned delay.
+func retryDelay(header http.Header, attempt int, maxDelay time.Duration) time.Duration {
+	return planRetry(header, attempt, maxDelay).delay
+}
+
+// uncappedRetryDelay is the delay before the cap and the zero floor, so a
+// broken backoff term is visible rather than hidden by the floor.
+func uncappedRetryDelay(header http.Header, attempt int) time.Duration {
+	if delay, ok := retryAfterDelay(header); ok {
+		return delay
+	}
+	return backoffDelay(attempt)
+}
+
+// The flags explain a wait in telemetry, so they must say where it came from.
+func TestPlanRetryExplainsTheDelay(t *testing.T) {
+	cases := []struct {
+		name                   string
+		header                 http.Header
+		wantRetryAfter, capped bool
+	}{
+		{"backoff", http.Header{}, false, false},
+		{"retry-after", http.Header{"Retry-After": {"2"}}, true, false},
+		{"retry-after capped", http.Header{"Retry-After": {"3600"}}, true, true},
+	}
+	for _, tc := range cases {
+		wait := planRetry(tc.header, 0, 10*time.Second)
+		if wait.retryAfter != tc.wantRetryAfter || wait.capped != tc.capped {
+			t.Errorf("%s: planRetry = %+v, want retryAfter=%v capped=%v", tc.name, wait, tc.wantRetryAfter, tc.capped)
+		}
+	}
+}

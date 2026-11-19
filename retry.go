@@ -28,17 +28,31 @@ func retryableStatus(statusCode int) bool {
 		statusCode == http.StatusGatewayTimeout
 }
 
-func retryDelay(header http.Header, attempt int, maxDelay time.Duration) time.Duration {
-	delay := uncappedRetryDelay(header, attempt)
-	if maxDelay > 0 && delay > maxDelay {
-		return maxDelay
+// retryWait is a planned sleep before the next attempt, with enough of its
+// derivation kept to explain it in a span event or log line.
+type retryWait struct {
+	delay time.Duration
+	// retryAfter reports that the delay came from a Retry-After header.
+	retryAfter bool
+	// capped reports that WithMaxRetryDelay shortened the delay.
+	capped bool
+}
+
+func planRetry(header http.Header, attempt int, maxDelay time.Duration) retryWait {
+	delay, retryAfter := retryAfterDelay(header)
+	if !retryAfter {
+		delay = backoffDelay(attempt)
 	}
-	if delay <= 0 {
+	wait := retryWait{delay: delay, retryAfter: retryAfter}
+	if maxDelay > 0 && delay > maxDelay {
+		wait.delay, wait.capped = maxDelay, true
+	}
+	if wait.delay <= 0 {
 		// Belt and braces: a zero or negative sleep would busy-loop the
 		// retry path against the service.
-		return backoffBase
+		wait.delay = backoffBase
 	}
-	return delay
+	return wait
 }
 
 // retryAfterDelay parses a Retry-After header in either of its two RFC 9110
@@ -71,10 +85,7 @@ const (
 	maxBackoffShift = 20
 )
 
-func uncappedRetryDelay(header http.Header, attempt int) time.Duration {
-	if delay, ok := retryAfterDelay(header); ok {
-		return delay
-	}
+func backoffDelay(attempt int) time.Duration {
 	if attempt < 0 {
 		attempt = 0
 	}

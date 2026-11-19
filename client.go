@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -64,6 +67,7 @@ type Client struct {
 	allowedHosts       map[string]struct{}
 	maxResponseBytes   int64
 	sleep              sleepFunc
+	logger             *slog.Logger
 }
 
 // Option configures a Client.
@@ -85,6 +89,11 @@ func WithBaseURL(value string) Option {
 // WithHTTPClient sets the HTTP client. A nil client is ignored. Its
 // configuration is copied; the original client's CheckRedirect is not changed.
 // Redirect callbacks may further restrict the client's same-origin policy.
+// Its transport is used as is: tracing reaches it through the request
+// context, never by replacing it.
+//
+// Without this option every client shares one package-level transport, so
+// clients in the same process reuse each other's connections.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) error {
 		if client != nil {
@@ -174,6 +183,17 @@ func WithMaxResponseBytes(limit int64) Option {
 	}
 }
 
+// WithLogger sets a logger for debug-level events that spans do not already
+// describe, such as a retry decision and its planned wait. A nil logger, the
+// default, disables logging. Log lines carry the same redacted route as spans
+// and never a token, body, header, query string or resource identifier.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Client) error {
+		c.logger = logger
+		return nil
+	}
+}
+
 // WithSleeper overrides retry sleeping. It exists for tests.
 func WithSleeper(fn sleepFunc) Option {
 	return func(c *Client) error {
@@ -215,25 +235,33 @@ func New(token TokenSource, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-func defaultHTTPClient() *http.Client {
+// defaultTransport is shared by every client built without [WithHTTPClient],
+// for the reason http.DefaultTransport is shared: a transport per client
+// would give each one a private connection pool, and every client in a
+// process would pay its own DNS lookup and TLS handshake to the same host.
+// It is unexported, so nothing outside the package can reconfigure it.
+var defaultTransport = newDefaultTransport()
+
+func newDefaultTransport() *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:       10 * time.Second,
 		KeepAlive:     30 * time.Second,
 		FallbackDelay: 250 * time.Millisecond,
 	}
-	return &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 20 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
+}
+
+func defaultHTTPClient() *http.Client {
+	return &http.Client{Timeout: 60 * time.Second, Transport: defaultTransport}
 }
 
 // Request describes a Microsoft Graph request.
@@ -290,9 +318,21 @@ func (c *Client) Delete(ctx context.Context, path string, params Params, out any
 // Do sends req and decodes a successful JSON response into out. If out is an
 // io.Writer, the response body is streamed into it instead.
 func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error) {
+	ctx, span := startSpan(ctx, spanRequest)
+	resp, err := c.do(ctx, span, req, out)
+	endCall(span, resp, err)
+	return resp, err
+}
+
+// do is Do without its own span: call is the span of the logical call that
+// owns these attempts, and receives their retry events.
+func (c *Client) do(ctx context.Context, call trace.Span, req Request, out any) (*Response, error) {
 	method := req.Method
 	if method == "" {
 		method = http.MethodGet
+	}
+	if call.IsRecording() {
+		call.SetAttributes(attrMethod.String(method))
 	}
 	body, contentType, err := encodeBody(req)
 	if err != nil {
@@ -305,22 +345,28 @@ func (c *Client) Do(ctx context.Context, req Request, out any) (*Response, error
 		if err != nil {
 			return nil, err
 		}
-		resp, err := c.httpClient.Do(httpReq)
+		if attempt == 0 && call.IsRecording() {
+			call.SetAttributes(attrURLTemplate.String(routeTemplate(httpReq.URL.EscapedPath())))
+		}
+		resp, err := roundTrip(c.httpClient, httpReq, attempt, true)
 		if err != nil {
 			if errors.Is(err, ErrRedirectRefused) || attempt >= c.maxRetries || !canRetry {
 				return nil, &requestFailure{cause: err}
 			}
-			if err := c.sleep(ctx, retryDelay(nil, attempt, c.maxDelay)); err != nil {
+			wait := planRetry(nil, attempt, c.maxDelay)
+			c.noteRetry(ctx, call, httpReq, attempt+1, 0, wait)
+			if err := c.sleep(ctx, wait.delay); err != nil {
 				return nil, err
 			}
 			continue
 		}
 
 		if retryableStatus(resp.StatusCode) && attempt < c.maxRetries && canRetry {
-			delay := retryDelay(resp.Header, attempt, c.maxDelay)
+			wait := planRetry(resp.Header, attempt, c.maxDelay)
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
 			_ = resp.Body.Close()
-			if err := c.sleep(ctx, delay); err != nil {
+			c.noteRetry(ctx, call, httpReq, attempt+1, resp.StatusCode, wait)
+			if err := c.sleep(ctx, wait.delay); err != nil {
 				return nil, err
 			}
 			continue
@@ -388,9 +434,9 @@ func (c *Client) newHTTPRequest(
 	// mutable request history exposed to a caller's CheckRedirect callback.
 	binding := &requestOrigin{origin: url.URL{Scheme: u.Scheme, Host: u.Host}, method: method}
 	httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), requestOriginKey{}, binding))
-	token, err := c.token.Token(ctx)
+	token, err := c.acquireToken(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("token: %w", err)
+		return nil, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Accept", "application/json")
@@ -511,6 +557,9 @@ func (c *Client) decodeResponse(resp *http.Response, out any) (*Response, error)
 		return nil, parseAPIError(resp.StatusCode, resp.Header, body)
 	}
 	if out == nil {
+		// Drain what the caller did not ask for, so the connection can be
+		// reused; closing an unread body discards the connection.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return meta, nil
 	}
 	if writer, ok := out.(io.Writer); ok {
